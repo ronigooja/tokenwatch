@@ -1,0 +1,54 @@
+name: macOS
+
+on:
+  push:
+    branches: [main]
+    paths: ['macos/**', '.github/workflows/macos.yml', 'server/openapi.json']
+  pull_request:
+    paths: ['macos/**', '.github/workflows/macos.yml', 'server/openapi.json']
+  workflow_dispatch:
+    inputs:
+      upload_app:
+        description: Upload the signed app bundle for manual QA
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: macos
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache SwiftPM dependencies
+        if: ${{ hashFiles('macos/Package.resolved') != '' }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            macos/.build/checkouts
+            macos/.build/repositories
+          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('macos/Package.resolved') }}
+      - name: Test
+        run: swift test
+      - name: Build and sign
+        run: |
+          swift build -c release
+          bin_path=$(swift build -c release --show-bin-path)
+          bash scripts/bundle.sh "$bin_path/Tokenwatch" .build/Tokenwatch.app
+          test -x .build/Tokenwatch.app/Contents/MacOS/Tokenwatch
+          test -f .build/Tokenwatch.app/Contents/Info.plist
+      - name: Archive app for QA
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_app }}
+        run: ditto -c -k --keepParent .build/Tokenwatch.app .build/Tokenwatch-macOS.zip
+      - name: Upload app for QA
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_app }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tokenwatch-macOS
+          path: macos/.build/Tokenwatch-macOS.zip
+          retention-days: 7
+          if-no-files-found: error
