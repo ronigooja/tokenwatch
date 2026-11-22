@@ -1,0 +1,13 @@
+# Copy to config.local.toml. Paths are relative to that file unless absolute.
+binary_path = "/path/to/fingerprint-chromium"
+profiles_root = "profiles"
+signing_key = "REPLACE_ME"
+max_instances = 1
+idle_timeout = 60
+cf_wait_seconds = 30
+
+[[accounts]]
+id = "account-example"
+proxy_url = "socks5h://USER:PASSWORD@proxy.example:1080"
+fingerprint_seed = 123456
+timezone = "America/New_York"
