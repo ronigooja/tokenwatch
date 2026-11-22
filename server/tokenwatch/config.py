@@ -12,6 +12,7 @@ class Settings(BaseModel):
     bearer_token: SecretStr = Field(min_length=1)
     signing_key: SecretStr = Field(min_length=1)
     upstream_factory: str = ""
+    browser_config: Path = Path("browser.local.toml")
     request_interval: float = Field(default=30, gt=0)
     request_jitter: float = Field(default=10, ge=0)
     backoff_initial: float = Field(default=60, gt=0)

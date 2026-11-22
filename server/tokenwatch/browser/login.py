@@ -22,10 +22,10 @@ async def _login(config: BrowserConfig, account_id: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Open the account browser for manual login under X/VNC.")
     parser.add_argument("--account", required=True)
-    parser.add_argument("--config", type=Path, default=Path("config.local.toml"))
+    parser.add_argument("--config", type=Path, default=Path("browser.local.toml"))
     args = parser.parse_args()
     try:
-        config = BrowserConfig.from_toml(args.config)
+        config = BrowserConfig.from_toml(args.config, signing_key="login-only")
         with suppress(KeyboardInterrupt, asyncio.CancelledError):
             asyncio.run(_login(config, args.account))
     except (ValueError, UpstreamError) as error:

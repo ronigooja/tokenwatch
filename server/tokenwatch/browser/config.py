@@ -65,10 +65,12 @@ class BrowserConfig:
             raise ValueError("Duplicate browser account ID")
 
     @classmethod
-    def from_toml(cls, path: Path) -> "BrowserConfig":
+    def from_toml(cls, path: Path, signing_key: str | None = None) -> "BrowserConfig":
         try:
             with path.open("rb") as source:
                 data = tomllib.load(source)
+            if signing_key is not None:
+                data["signing_key"] = signing_key
             for name in ("binary_path", "profiles_root"):
                 data[name] = path.parent / Path(data[name]).expanduser()
             data["accounts"] = tuple(AccountConfig(**account) for account in data["accounts"])

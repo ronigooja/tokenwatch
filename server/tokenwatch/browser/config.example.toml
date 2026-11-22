@@ -1,7 +1,7 @@
-# Copy to config.local.toml. Paths are relative to that file unless absolute.
+# Copy to browser.local.toml (git-ignored). Paths are relative to that file unless absolute.
+# The signing key comes from the server settings, not from this file.
 binary_path = "/path/to/fingerprint-chromium"
 profiles_root = "profiles"
-signing_key = "REPLACE_ME"
 max_instances = 1
 idle_timeout = 60
 cf_wait_seconds = 30
