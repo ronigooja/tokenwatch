@@ -21,12 +21,12 @@ Scheduler → browser pool → collectors → store → rule engine → events �
 
 ## Coin list
 
-Candidates are the union of Binance spot and Binance Alpha coins. A coin is kept only when Arkham returns data for it. Exclusions and mapping fixes are stored in the database and editable from the client.
+Candidates are the union of Binance spot and Binance Alpha symbols. Automatic eligibility requires a mapped pricing ID and a nonempty Arkham balance response; verification requests are opt-in. The database retains ineligible candidates with their reasons. The client can edit mappings and exclusions and explicitly mark a mapping verified.
 
 ## Invariants
 
 - Each account is bound to one proxy; there is no direct-connection fallback. Why: avoid exposing the server IP and mixing identities.
 - Event rules, thresholds, and exclusions are data, not code. Why: they change without deployments.
-- Transfer polling interval adapts to each coin's transfer rate so one fetch uses at most half of the visible window. A fetch that reaches no known transfer id marks a gap and raises an alert. Why: the upstream exposes only the newest transfers.
+- Transfer polling targets half the visible window per fetch, subject to configured polling and account rate limits. Once a nonempty baseline exists, a nonempty fetch that reaches no known transfer ID marks a gap and raises an alert. Why: the upstream exposes only the newest transfers.
 - A balance fetch that returns the full page size is flagged as possibly truncated, never auto-paginated.
 - Daily entity balances are kept indefinitely; snapshots and transfer history have configurable retention.
