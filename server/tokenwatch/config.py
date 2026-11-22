@@ -22,6 +22,7 @@ class Settings(BaseModel):
     transfer_retention_days: int = Field(default=30, gt=0)
     snapshot_retention_days: int = Field(default=30, gt=0)
     allow_pricing_id_checks: bool = False
+    account_status_ttl: float = Field(default=600, gt=0)
 
     @model_validator(mode="after")
     def validate_ranges(self):

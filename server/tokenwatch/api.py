@@ -1,7 +1,7 @@
 import asyncio
 import secrets
 from contextlib import asynccontextmanager, suppress
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from importlib import import_module
 from typing import Annotated
 
@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import schemas as s
-from .coins import CoinCatalog, KnownPricingIDResolver
+from .coins import CoinCatalog, CoinGeckoResolver
 from .collectors import Collectors, snapshot_diff
 from .config import load_settings
 from .db import (Account, Coin, CoinMapping, DailyBalance, DailyCollection, Event, Exclusion,
@@ -176,12 +176,14 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
         store = open_store(config.database)
         app.state.settings, app.state.store, app.state.upstream = config, store, client
         app.state.collectors = None
+        app.state.gate = None
         task = None
         try:
             if client is not None:
                 gate = RequestGate(store, client, config)
+                app.state.gate = gate
                 collectors = Collectors(store, gate, config)
-                catalog = CoinCatalog(store, gate, config, resolver or KnownPricingIDResolver({}),
+                catalog = CoinCatalog(store, gate, config, resolver or CoinGeckoResolver(store),
                                       **({"candidates": candidates} if candidates else {}))
                 app.state.collectors = collectors
                 if run_scheduler:
@@ -215,8 +217,8 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
     @app.get("/accounts/{account_id}/session", response_model=s.AccountSession, dependencies=auth)
     async def account_session(account_id: s.Ref, db: DB, request: Request):
         find(db, Account, account_id)
-        client = request.app.state.upstream
-        return {"status": await client.account_status(account_id) if client else "unknown"}
+        gate = request.app.state.gate
+        return {"status": await gate.account_status(account_id) if gate else "unknown"}
 
     @app.get("/coins/{coin_id}/mapping", response_model=s.MappingInput, dependencies=auth)
     def get_mapping(coin_id: s.Ref, db: DB):
@@ -295,6 +297,17 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
             series[row.entity_id].append(row)
         days = add_bounds(select(DailyCollection).where(DailyCollection.coin_id == coin_id), DailyCollection.day, start, end)
         return {"coin_id": coin_id, "days": db.scalars(days.order_by(DailyCollection.day)).all(), "series": series}
+
+    @app.get("/coins/{coin_id}/entities", response_model=list[s.EntityBalanceOut], dependencies=auth)
+    def coin_entities(coin_id: s.Ref, db: DB, days: Annotated[int, Query(ge=1, le=36500)] = 30):
+        find(db, Coin, coin_id)
+        latest = select(DailyBalance.entity_id, func.max(DailyBalance.day).label("day")).where(
+            DailyBalance.coin_id == coin_id,
+            DailyBalance.day >= now().date() - timedelta(days=days - 1),
+        ).group_by(DailyBalance.entity_id).subquery()
+        return db.scalars(select(DailyBalance).join(latest, (DailyBalance.entity_id == latest.c.entity_id) &
+            (DailyBalance.day == latest.c.day)).where(DailyBalance.coin_id == coin_id)
+            .order_by(DailyBalance.entity_id)).all()
 
     @app.post("/snapshots", status_code=201, response_model=s.SnapshotOut, dependencies=auth)
     async def create_snapshot(body: s.SnapshotInput, request: Request):

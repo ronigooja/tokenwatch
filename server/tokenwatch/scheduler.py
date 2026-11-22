@@ -29,6 +29,26 @@ class RequestGate:
         self.sleep = sleep
         self.uniform = uniform
         self.locks = defaultdict(asyncio.Lock)
+        self.status_cache = {}
+        self.status_locks = defaultdict(asyncio.Lock)
+
+    def remember_status(self, account_id, status):
+        self.status_cache[account_id] = (self.clock(), status)
+
+    async def account_status(self, account_id):
+        async with self.status_locks[account_id]:
+            cached = self.status_cache.get(account_id)
+            if cached and self.clock() - cached[0] < self.settings.account_status_ttl:
+                return cached[1]
+            try:
+                payload = await self.get(account_id, "/user", None)
+                status = "logged_in" if isinstance(payload, dict) and payload else "unknown"
+            except AuthRequired:
+                status = "logged_out"
+            except Exception:
+                status = "unknown"
+            self.remember_status(account_id, status)
+            return status
 
     async def get(self, account_id, path, params, decode=lambda value: value):
         async with self.locks[account_id]:
@@ -48,6 +68,8 @@ class RequestGate:
             try:
                 result = decode(await self.upstream.get_json(account_id, path, params))
             except UpstreamError as exc:
+                if isinstance(exc, AuthRequired):
+                    self.remember_status(account_id, "logged_out")
                 with self.store.begin() as db:
                     if account := db.get(Account, account_id):
                         account.failures += 1
@@ -65,6 +87,7 @@ class RequestGate:
             with self.store.begin() as db:
                 if account := db.get(Account, account_id):
                     account.failures = 0
+            self.remember_status(account_id, "logged_in")
             return result
 
 

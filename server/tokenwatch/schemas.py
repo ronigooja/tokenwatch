@@ -226,3 +226,12 @@ class SnapshotDiff(Schema):
     added: list[SnapshotRowOut]
     removed: list[SnapshotRowOut]
     changed: list[ChangedRow]
+
+
+class EntityBalanceOut(Schema):
+    entity_id: str
+    entity_name: str | None
+    entity_type: str | None
+    balance_unit: float
+    balance_usd: float
+    day: date

@@ -1789,6 +1789,67 @@
         }
       }
     },
+    "/coins/{coin_id}/entities": {
+      "get": {
+        "summary": "Coin Entities",
+        "operationId": "coin_entities_coins__coin_id__entities_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "coin_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "title": "Coin Id"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 36500,
+              "minimum": 1,
+              "default": 30,
+              "title": "Days"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EntityBalanceOut"
+                  },
+                  "title": "Response Coin Entities Coins  Coin Id  Entities Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/snapshots": {
       "post": {
         "summary": "Create Snapshot",
@@ -2299,6 +2360,60 @@
           "sources"
         ],
         "title": "CoinOut"
+      },
+      "EntityBalanceOut": {
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "title": "Entity Id"
+          },
+          "entity_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Name"
+          },
+          "entity_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Type"
+          },
+          "balance_unit": {
+            "type": "number",
+            "title": "Balance Unit"
+          },
+          "balance_usd": {
+            "type": "number",
+            "title": "Balance Usd"
+          },
+          "day": {
+            "type": "string",
+            "format": "date",
+            "title": "Day"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "entity_id",
+          "entity_name",
+          "entity_type",
+          "balance_unit",
+          "balance_usd",
+          "day"
+        ],
+        "title": "EntityBalanceOut"
       },
       "EventOut": {
         "properties": {

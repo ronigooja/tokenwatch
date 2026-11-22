@@ -12,3 +12,4 @@ transfer_max_interval = 1800.0
 transfer_retention_days = 30
 snapshot_retention_days = 30
 allow_pricing_id_checks = false
+account_status_ttl = 600.0

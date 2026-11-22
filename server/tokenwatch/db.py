@@ -29,6 +29,21 @@ class CoinMapping(Base):
     pricing_id: Mapped[str]
 
 
+class CatalogCache(Base):
+    __tablename__ = "catalog_cache"
+    key: Mapped[str] = mapped_column(primary_key=True)
+    payload: Mapped[list] = mapped_column(default=list)
+    refreshed_at: Mapped[float] = mapped_column(default=0)
+    attempted_at: Mapped[float] = mapped_column(default=0)
+
+
+class CatalogMapping(Base):
+    __tablename__ = "catalog_mappings"
+    symbol: Mapped[str] = mapped_column(primary_key=True)
+    pricing_id: Mapped[str | None]
+    ambiguous: Mapped[bool]
+
+
 class Account(Base):
     __tablename__ = "accounts"
     id: Mapped[str] = mapped_column(primary_key=True)
@@ -202,5 +217,7 @@ def open_store(path: Path):
             connection.execute(text("PRAGMA user_version=1"))
         elif version != 1:
             raise RuntimeError(f"Unsupported database schema version: {version}")
+        CatalogCache.__table__.create(connection, checkfirst=True)
+        CatalogMapping.__table__.create(connection, checkfirst=True)
         connection.commit()
     return sessionmaker(engine, expire_on_commit=False)

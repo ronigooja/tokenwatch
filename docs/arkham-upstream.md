@@ -14,6 +14,7 @@ Base URL: `https://api.arkm.com`. No official API key is used; requests run from
 
 | Endpoint | Use | Limits |
 |---|---|---|
+| `GET /user` | Login detection from the existing page context, with the same signing and account request gate | Logged-in sessions return HTTP 200 and user JSON; anonymous requests are denied. Login detection relies on HTTP status, not specific user fields; the user response schema is not verified. |
 | `GET /transfers?base=all&flow=all&sortKey=time&sortDir=desc&limit=N&offset=M&tokens=COIN` | Latest transfers of a coin; optional `usdGte` filters by value | `offset + limit` must be ≤ 100 |
 | `GET /intelligence/entity_balance_changes?interval=7d&orderBy=balance_usd_pct_change&orderDir=desc&balanceMin=USD&pricingIds=COIN&limit=50&offset=0` | Entities holding a coin with balance and previous balance (`balanceUnit`, `balanceUsd`, `prevBalanceUnit`, `prevBalanceUsd`) | The page sends one request with `balanceMin=100000`; daily jobs configure their own minimum, and catalog checks omit it. No paging. |
 
@@ -21,6 +22,7 @@ Base URL: `https://api.arkm.com`. No official API key is used; requests run from
 - Omitting `pricingIds` returns entities with per-coin `tokenBalances`. Manual snapshots encode multiple pricing IDs as one comma-separated parameter.
 - `interval` values used by the page: `7d`, `14d`, `30d`.
 - Responses are JSON; transfers are under `transfers`, balance changes are a top-level array.
+- Login probes require a nonempty JSON object after successful HTTP decoding; they do not assume an account identifier field name. Status cache behavior is defined in [architecture.md](architecture.md).
 
 ## Transfer fields used
 
