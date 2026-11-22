@@ -272,6 +272,19 @@ def test_binance_spot_alpha_union():
     assert candidates[0].sources == [{"feed": "spot"}, {"feed": "alpha", "chain_id": "1", "contract_address": "0x1"}]
 
 
+def test_binance_candidates_skip_symbols_the_api_cannot_address():
+    feeds = {
+        SPOT_URL: {"symbols": [{"status": "TRADING", "baseAsset": "ABC", "quoteAsset": "USD"}]},
+        ALPHA_URL: {"code": "000000", "data": [
+            {"symbol": "$PAAL", "chainId": "1", "contractAddress": "0x1"},
+            {"symbol": "人生K线", "chainId": "56", "contractAddress": "0x2"},
+            {"symbol": "FREEDOM OF MONEY", "chainId": "56", "contractAddress": "0x3"},
+        ]},
+    }
+    transport = MockTransport(lambda request: Response(200, json=feeds[str(request.url)]))
+    assert [entry.symbol for entry in asyncio.run(binance_candidates(transport))] == ["ABC"]
+
+
 def test_api_crud_snapshots_filters_and_socket(settings):
     fake = FakeUpstream()
     fake.responses.extend([{"id": "user"}, [balance("a"), balance("b")], [balance("b", 2), balance("c")]])

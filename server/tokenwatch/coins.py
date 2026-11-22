@@ -1,4 +1,5 @@
 import asyncio
+import re
 import time
 from dataclasses import dataclass
 from typing import Protocol
@@ -14,6 +15,7 @@ SPOT_URL = "https://api.binance.com/api/v3/exchangeInfo"
 ALPHA_URL = "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
 GECKO_URL = "https://api.coingecko.com/api/v3/coins/list?include_platform=true"
 WEEK = 7 * 24 * 3600
+COIN_ID = re.compile(r"[A-Z0-9][A-Z0-9_.-]{0,127}")
 # Only explicit chain identities are eligible for contract matching.
 PLATFORMS = {"1": "ethereum", "56": "binance-smart-chain", "137": "polygon-pos",
              "42161": "arbitrum-one", "10": "optimistic-ethereum", "8453": "base",
@@ -122,7 +124,8 @@ async def binance_candidates(transport=None):
         sources = candidates.setdefault(token["symbol"].upper(), [])
         if source not in sources:
             sources.append(source)
-    return [Candidate(symbol, sources) for symbol, sources in sorted(candidates.items())]
+    return [Candidate(symbol, sources) for symbol, sources in sorted(candidates.items())
+            if COIN_ID.fullmatch(symbol)]
 
 
 class CoinCatalog:
