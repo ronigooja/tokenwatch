@@ -19,8 +19,8 @@ public struct EventStream: Sendable {
         return try APIClient.decoder().decode(Event.self, from: data)
     }
 
-    public func run(onState: @Sendable (StreamState) async -> Void,
-                    onEvent: @Sendable (Event) async -> Void) async {
+    public func run(onState: @escaping @Sendable (StreamState) async -> Void,
+                    onEvent: @escaping @Sendable (Event) async -> Void) async {
         var delay = 1
         while !Task.isCancelled {
             await onState(.connecting)
