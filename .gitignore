@@ -1,0 +1,28 @@
+# secrets and local config
+.env
+.env.*
+config.local.*
+*.pw
+proxies*.txt
+secrets/
+
+# runtime data
+*.db
+*.db-wal
+*.db-shm
+profiles/
+data/
+logs/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# macOS / Xcode
+.DS_Store
+xcuserdata/
+DerivedData/
+.build/
