@@ -102,6 +102,18 @@ class _PlaywrightSession:
             await self._driver.stop()
 
 
+def persona_args(account: AccountConfig) -> list[str]:
+    if account.persona != "windows":
+        return []
+    return [
+        f"--fingerprint={account.fingerprint_seed}",
+        "--fingerprint-platform=windows",
+        "--fingerprint-platform-version=15.0.0",
+        "--fingerprint-brand=Chrome",
+        "--fingerprint-hardware-concurrency=8",
+    ]
+
+
 class PlaywrightLauncher:
     async def launch(
         self, binary: Path, profile: Path, account: AccountConfig, proxy_port: int
@@ -114,19 +126,15 @@ class PlaywrightLauncher:
             context = await driver.chromium.launch_persistent_context(
                 str(profile), executable_path=str(binary), headless=False,
                 ignore_default_args=["--enable-automation"],
-                viewport={"width": 1366, "height": 768},
+                no_viewport=True, chromium_sandbox=True,
                 args=[
-                    f"--fingerprint={account.fingerprint_seed}",
-                    "--fingerprint-platform=windows",
-                    "--fingerprint-platform-version=15.0.0",
-                    "--fingerprint-brand=Chrome",
-                    "--fingerprint-hardware-concurrency=8",
+                    *persona_args(account),
                     f"--timezone={account.timezone}",
-                    "--lang=en-US", "--accept-lang=en-US,en", "--no-sandbox",
+                    "--lang=en-US", "--accept-lang=en-US,en",
                     f"--proxy-server=socks5://127.0.0.1:{proxy_port}",
                     "--proxy-bypass-list=<-loopback>", "--disable-quic",
                     "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-                    "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
+                    "--window-position=0,0", "--window-size=1366,768",
                 ],
             )
             page = context.pages[0] if context.pages else await context.new_page()

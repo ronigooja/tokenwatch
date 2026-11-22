@@ -11,3 +11,4 @@ id = "account-example"
 proxy_url = "socks5h://USER:PASSWORD@proxy.example:1080"
 fingerprint_seed = 123456
 timezone = "America/New_York"
+persona = "none"

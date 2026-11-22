@@ -8,12 +8,12 @@ Type=simple
 User=tokenwatch
 WorkingDirectory=/opt/tokenwatch/server
 Environment=TOKENWATCH_CONFIG=/etc/tokenwatch/config.local.toml
-ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 1366x768x24" /opt/tokenwatch/venv/bin/uvicorn tokenwatch.api:create_app --factory --workers 1 --host 127.0.0.1 --port 8000
+Environment=DISPLAY=:77
+ExecStart=/opt/tokenwatch/venv/bin/uvicorn tokenwatch.api:create_app --factory --workers 1 --host 127.0.0.1 --port 8000
 Restart=on-failure
 RestartSec=10
 UMask=0077
 NoNewPrivileges=true
-PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

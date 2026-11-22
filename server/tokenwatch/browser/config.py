@@ -31,8 +31,11 @@ class AccountConfig:
     proxy_url: str = field(repr=False)
     fingerprint_seed: int
     timezone: str = "America/New_York"
+    persona: str = "none"
 
     def __post_init__(self) -> None:
+        if self.persona not in ("none", "windows"):
+            raise ValueError("Invalid browser persona")
         if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]*", self.id):
             raise ValueError("Invalid browser account ID")
         if type(self.fingerprint_seed) is not int or self.fingerprint_seed < 0:

@@ -4,7 +4,24 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from tokenwatch.browser import AccountConfig
 from tokenwatch.browser._proxy_worker import _serve
-from tokenwatch.browser.transport import PProxyForwarder, _PlaywrightSession
+from tokenwatch.browser.transport import PProxyForwarder, _PlaywrightSession, persona_args
+
+
+class PersonaTests(unittest.TestCase):
+    def test_none_persona_adds_no_fingerprint_flags(self):
+        account = AccountConfig("a1", "socks5h://u:p@proxy.example:1080", 1)
+        self.assertEqual(account.persona, "none")
+        self.assertEqual(persona_args(account), [])
+
+    def test_windows_persona_adds_fingerprint_flags(self):
+        account = AccountConfig("a1", "socks5h://u:p@proxy.example:1080", 7, persona="windows")
+        args = persona_args(account)
+        self.assertIn("--fingerprint=7", args)
+        self.assertIn("--fingerprint-platform=windows", args)
+
+    def test_unknown_persona_is_rejected(self):
+        with self.assertRaises(ValueError):
+            AccountConfig("a1", "socks5h://u:p@proxy.example:1080", 1, persona="mac")
 
 
 class BrowserDomTests(unittest.IsolatedAsyncioTestCase):
