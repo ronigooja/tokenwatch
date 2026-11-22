@@ -138,8 +138,13 @@ class BrowserUpstreamClient:
             return _decode(response, self._clock())
 
     async def account_status(self, account_id: str) -> str:
-        async with self._lease(account_id) as instance:
-            return await _through(instance.forward, instance.session.account_status)
+        try:
+            payload = await self.get_json(account_id, "/user")
+            return "logged_in" if isinstance(payload, dict) and payload else "unknown"
+        except AuthRequired:
+            return "logged_out"
+        except Exception:
+            return "unknown"
 
     async def manual_login(self, account_id: str) -> None:
         async with self._lease(account_id, interactive=True) as instance:

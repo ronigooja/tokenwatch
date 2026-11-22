@@ -77,7 +77,7 @@ class FakeSession:
         await self.resume.wait()
         if self.error:
             raise self.error
-        return Response(200, '[]')
+        return getattr(self, "response", Response(200, '[]'))
 
     async def wait_closed(self):
         await self.closed.wait()
@@ -133,6 +133,17 @@ class ResponseTests(unittest.TestCase):
 
 
 class ClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_user_login_status(self):
+        session = FakeSession()
+        client, _, _ = self.client(session)
+        for response, expected in ((Response(200, '{"id":"user"}'), "logged_in"),
+                                   (Response(401, '{}'), "logged_out"),
+                                   (Response(403, 'denied at anonymous'), "logged_out"),
+                                   (Response(500, '{}'), "unknown"),
+                                   (Response(200, 'not json'), "unknown")):
+            session.response = response
+            self.assertEqual(await client.account_status("one"), expected)
+
     def client(self, *sessions, **options):
         launcher, forwarder = FakeLauncher(*sessions), FakeForwarder()
         client = BrowserUpstreamClient(replace(CONFIG, **options), launcher=launcher,
@@ -148,8 +159,10 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(session.opened)
         self.assertEqual(await client.account_status("one"), "unknown")
         self.assertEqual(launcher.launches, [(Path("chrome"), Path("profiles/one"), CONFIG.accounts[0], 12345)])
-        self.assertEqual(session.fetches, [("https://api.arkm.com/transfers?tokens=a+b",
+        self.assertEqual(session.fetches[:1], [("https://api.arkm.com/transfers?tokens=a+b",
                                            {"X-Timestamp": str(TIMESTAMP), "X-Payload": SIGNATURE})])
+        self.assertEqual(session.fetches[1][0], "https://api.arkm.com/user")
+        self.assertEqual(session.fetches[1][1]["X-Payload"], sign_payload("/user", TIMESTAMP, CONFIG.signing_key))
 
     async def test_serializes_requests_for_one_account(self):
         session = FakeSession()

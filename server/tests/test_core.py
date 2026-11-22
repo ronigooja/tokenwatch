@@ -160,7 +160,7 @@ def test_transfers_dedup_adaptive_and_gap(core):
     fake.responses.extend([{"transfers": payload} for payload in (
         [transfer("a"), transfer("a")], [transfer("b"), transfer("a")], [transfer("c")],
     )])
-    assert asyncio.run(collectors.transfers(job)) == 1120
+    assert asyncio.run(collectors.transfers(job)) == 4600
     clock.value += 100
     assert asyncio.run(collectors.transfers(job)) == 4700
     clock.value += 100
@@ -256,23 +256,25 @@ def test_coin_catalog_requires_mapping_and_opt_in(core, settings):
         assert db.get(Coin, "UNMAPPED").exclusion_reason == "mapping_required"
     assert len(fake.calls) == 2
 
+    assert all(call[2]["limit"] == "1" for call in fake.calls)
+
 
 def test_binance_spot_alpha_union():
     feeds = {
         SPOT_URL: {"symbols": [{"status": "TRADING", "baseAsset": "ABC", "quoteAsset": "USD"},
                                {"status": "BREAK", "baseAsset": "NO", "quoteAsset": "USD"}]},
-        ALPHA_URL: {"data": [{"symbol": "abc", "chainId": "1", "contractAddress": "0x1"},
+        ALPHA_URL: {"code": "000000", "data": [{"symbol": "abc", "chainId": "1", "contractAddress": "0x1"},
                              {"symbol": "DEF", "chainId": "2", "contractAddress": "0x2"}]},
     }
     transport = MockTransport(lambda request: Response(200, json=feeds[str(request.url)]))
     candidates = asyncio.run(binance_candidates(transport))
-    assert {entry.symbol for entry in candidates} == {"ABC", "DEF", "USD"}
+    assert {entry.symbol for entry in candidates} == {"ABC", "DEF"}
     assert candidates[0].sources == [{"feed": "spot"}, {"feed": "alpha", "chain_id": "1", "contract_address": "0x1"}]
 
 
 def test_api_crud_snapshots_filters_and_socket(settings):
     fake = FakeUpstream()
-    fake.responses.extend([[balance("a"), balance("b")], [balance("b", 2), balance("c")]])
+    fake.responses.extend([{"id": "user"}, [balance("a"), balance("b")], [balance("b", 2), balance("c")]])
     app = create_app(settings, fake, run_scheduler=False)
     headers = {"Authorization": "Bearer test-token"}
     with TestClient(app) as client:
@@ -294,7 +296,7 @@ def test_api_crud_snapshots_filters_and_socket(settings):
         for _ in range(2):
             response = client.post("/snapshots", json={"account_id": "a", "pricing_ids": ["abc", "def"]})
             assert response.status_code == 201, response.text
-        assert fake.calls[0][2]["pricingIds"] == "abc,def"
+        assert fake.calls[1][2]["pricingIds"] == "abc,def"
         assert len(client.get("/snapshots/1").json()["rows"]) == 2
         comparison = client.get("/snapshots/compare?before=1&after=2").json()
         assert [row["entity_id"] for row in comparison["added"]] == ["c"]

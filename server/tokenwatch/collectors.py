@@ -125,10 +125,15 @@ class Collectors:
             new_ids = set(rows) - known
             gap = bool(rows and baseline and baseline.ids and not known.intersection(rows))
             rate = baseline.rate if baseline else None
+            if rate is None and len(rows) >= 2:
+                times = [row["time"] for row in rows.values()]
+                span = (max(times) - min(times)).total_seconds()
+                if span > 0:
+                    rate = len(rows) / span
             if baseline and stamp > baseline.last_poll:
                 observed = len(new_ids) / (stamp - baseline.last_poll)
                 rate = observed if rate is None else (observed + rate) / 2
-            interval = 0.5 * TRANSFER_LIMIT / rate if rate else (maximum if baseline else job.interval_seconds)
+            interval = 0.5 * TRANSFER_LIMIT / rate if rate else maximum
             if gap:
                 interval = min(interval, baseline.interval) / 2
                 alert(db, f"transfer_gap:{coin.id}:{next(iter(rows))}", "transfer_gap",
