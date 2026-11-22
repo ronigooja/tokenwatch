@@ -1,2 +1,0 @@
-playwright>=1.51,<2
-pproxy==2.7.9
