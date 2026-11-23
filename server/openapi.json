@@ -155,167 +155,6 @@
         }
       }
     },
-    "/coins": {
-      "get": {
-        "summary": "List Items",
-        "operationId": "list_coins",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/CoinOut"
-                  },
-                  "type": "array",
-                  "title": "Response List Coins"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/coins/{resource_id}": {
-      "get": {
-        "summary": "Get Item",
-        "operationId": "get_coins",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "resource_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
-              "title": "Resource Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CoinOut"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "put": {
-        "summary": "Save",
-        "operationId": "put_coins",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "resource_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
-              "title": "Resource Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CoinInput"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CoinOut"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "summary": "Delete Item",
-        "operationId": "delete_coins",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "resource_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
-              "title": "Resource Id"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Successful Response"
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/subscriptions": {
       "get": {
         "summary": "List Items",
@@ -359,7 +198,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$",
               "title": "Resource Id"
             }
           }
@@ -402,7 +241,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$",
               "title": "Resource Id"
             }
           }
@@ -455,7 +294,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$",
               "title": "Resource Id"
             }
           }
@@ -676,167 +515,6 @@
         }
       }
     },
-    "/exclusions": {
-      "get": {
-        "summary": "List Items",
-        "operationId": "list_exclusions",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/ExclusionOut"
-                  },
-                  "type": "array",
-                  "title": "Response List Exclusions"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/exclusions/{resource_id}": {
-      "get": {
-        "summary": "Get Item",
-        "operationId": "get_exclusions",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "resource_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
-              "title": "Resource Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ExclusionOut"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "put": {
-        "summary": "Save",
-        "operationId": "put_exclusions",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "resource_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
-              "title": "Resource Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ExclusionInput"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ExclusionOut"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "summary": "Delete Item",
-        "operationId": "delete_exclusions",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "resource_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
-              "title": "Resource Id"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Successful Response"
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/rules": {
       "get": {
         "summary": "List Items",
@@ -1016,6 +694,591 @@
             "schema": {
               "type": "integer",
               "title": "Resource Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/coins": {
+      "get": {
+        "summary": "List Coins",
+        "operationId": "list_coins",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "supported",
+                    "no_match",
+                    "ambiguous",
+                    "unsupported",
+                    "needs_manual_mapping",
+                    "unknown_onchain",
+                    "excluded",
+                    "no_futures",
+                    "pending_match",
+                    "pending_support"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CoinOut"
+                  },
+                  "title": "Response List Coins"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/coins/{coin_id}": {
+      "get": {
+        "summary": "Get Coin",
+        "operationId": "get_coins",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "coin_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$",
+              "title": "Coin Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoinOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/coin-catalog": {
+      "get": {
+        "summary": "Get Catalog Status",
+        "operationId": "get_catalog_status_coin_catalog_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogStatus"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/coin-catalog/chains": {
+      "get": {
+        "summary": "List Chain Observations",
+        "operationId": "list_chain_observations_coin_catalog_chains_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ChainObservationOut"
+                  },
+                  "type": "array",
+                  "title": "Response List Chain Observations Coin Catalog Chains Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/coin-catalog/futures-mappings": {
+      "get": {
+        "summary": "List Futures Mappings",
+        "operationId": "list_futures_mappings_coin_catalog_futures_mappings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/FuturesMappingOut"
+                  },
+                  "type": "array",
+                  "title": "Response List Futures Mappings Coin Catalog Futures Mappings Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/coin-catalog/futures-mappings/{base}": {
+      "put": {
+        "summary": "Put Futures Mapping",
+        "operationId": "put_futures_mapping_coin_catalog_futures_mappings__base__put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "base",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Base"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FuturesMappingInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FuturesMappingOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Futures Mapping",
+        "operationId": "delete_futures_mapping_coin_catalog_futures_mappings__base__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "base",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Base"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/coin-catalog/exclusion-rules": {
+      "get": {
+        "summary": "List Catalog Exclusions",
+        "operationId": "list_catalog_exclusions_coin_catalog_exclusion_rules_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CatalogExclusionOut"
+                  },
+                  "type": "array",
+                  "title": "Response List Catalog Exclusions Coin Catalog Exclusion Rules Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/coin-catalog/exclusion-rules/{kind}/{value}": {
+      "put": {
+        "summary": "Put Catalog Exclusion",
+        "operationId": "put_catalog_exclusion_coin_catalog_exclusion_rules__kind___value__put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "flag",
+                "tag"
+              ],
+              "type": "string",
+              "title": "Kind"
+            }
+          },
+          {
+            "name": "value",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Value"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExclusionInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogExclusionOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Catalog Exclusion",
+        "operationId": "delete_catalog_exclusion_coin_catalog_exclusion_rules__kind___value__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "flag",
+                "tag"
+              ],
+              "type": "string",
+              "title": "Kind"
+            }
+          },
+          {
+            "name": "value",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Value"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/exclusions": {
+      "get": {
+        "summary": "List Exclusions",
+        "operationId": "list_exclusions",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ExclusionOut"
+                  },
+                  "type": "array",
+                  "title": "Response List Exclusions"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/exclusions/{coin_id}": {
+      "get": {
+        "summary": "Get Exclusion",
+        "operationId": "get_exclusion_exclusions__coin_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "coin_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$",
+              "title": "Coin Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExclusionOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Put Exclusion",
+        "operationId": "put_exclusion_exclusions__coin_id__put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "coin_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$",
+              "title": "Coin Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExclusionInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExclusionOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Exclusion",
+        "operationId": "delete_exclusion_exclusions__coin_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "coin_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$",
+              "title": "Coin Id"
             }
           }
         ],
@@ -1299,7 +1562,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$",
               "title": "Coin Id"
             }
           }
@@ -1342,7 +1605,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$",
               "title": "Coin Id"
             }
           }
@@ -1395,7 +1658,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$",
               "title": "Coin Id"
             }
           }
@@ -1435,7 +1698,7 @@
               "anyOf": [
                 {
                   "type": "string",
-                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$"
                 },
                 {
                   "type": "null"
@@ -1706,7 +1969,7 @@
               "anyOf": [
                 {
                   "type": "string",
-                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$"
                 },
                 {
                   "type": "null"
@@ -1903,7 +2166,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$",
               "title": "Coin Id"
             }
           },
@@ -1996,7 +2259,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$",
               "title": "Coin Id"
             }
           },
@@ -2581,6 +2844,117 @@
         ],
         "title": "BalancePoint"
       },
+      "CatalogExclusionOut": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Reason"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "flag",
+              "tag"
+            ],
+            "title": "Kind"
+          },
+          "value": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Value"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "reason",
+          "kind",
+          "value"
+        ],
+        "title": "CatalogExclusionOut"
+      },
+      "CatalogStatus": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "validated",
+              "unknown"
+            ],
+            "title": "Status"
+          },
+          "attempted_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempted At"
+          },
+          "refreshed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refreshed At"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "attempted_at",
+          "refreshed_at",
+          "error"
+        ],
+        "title": "CatalogStatus"
+      },
+      "ChainObservationOut": {
+        "properties": {
+          "alpha_chain_id": {
+            "type": "string",
+            "title": "Alpha Chain Id"
+          },
+          "arkham_chains": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Arkham Chains"
+          },
+          "conflict": {
+            "type": "boolean",
+            "title": "Conflict"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "alpha_chain_id",
+          "arkham_chains",
+          "conflict"
+        ],
+        "title": "ChainObservationOut"
+      },
       "ChangedRow": {
         "properties": {
           "before": {
@@ -2598,43 +2972,15 @@
         ],
         "title": "ChangedRow"
       },
-      "CoinInput": {
-        "properties": {
-          "symbol": {
-            "type": "string",
-            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
-            "title": "Symbol"
-          },
-          "pricing_id": {
-            "anyOf": [
-              {
-                "type": "string",
-                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Pricing Id"
-          },
-          "verified": {
-            "type": "boolean",
-            "title": "Verified",
-            "default": false
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "symbol"
-        ],
-        "title": "CoinInput"
-      },
       "CoinOut": {
         "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$",
+            "title": "Id"
+          },
           "symbol": {
             "type": "string",
-            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
             "title": "Symbol"
           },
           "pricing_id": {
@@ -2649,16 +2995,23 @@
             ],
             "title": "Pricing Id"
           },
-          "verified": {
-            "type": "boolean",
-            "title": "Verified",
-            "default": false
-          },
-          "id": {
+          "status": {
             "type": "string",
-            "title": "Id"
+            "enum": [
+              "supported",
+              "no_match",
+              "ambiguous",
+              "unsupported",
+              "needs_manual_mapping",
+              "unknown_onchain",
+              "excluded",
+              "no_futures",
+              "pending_match",
+              "pending_support"
+            ],
+            "title": "Status"
           },
-          "exclusion_reason": {
+          "reason": {
             "anyOf": [
               {
                 "type": "string"
@@ -2667,26 +3020,106 @@
                 "type": "null"
               }
             ],
-            "title": "Exclusion Reason"
+            "title": "Reason"
           },
           "sources": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "type": "string",
+              "enum": [
+                "spot",
+                "alpha"
+              ]
             },
             "type": "array",
             "title": "Sources"
+          },
+          "deployments": {
+            "items": {
+              "$ref": "#/components/schemas/Deployment"
+            },
+            "type": "array",
+            "title": "Deployments"
+          },
+          "matched_chains": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Matched Chains"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "symbol",
           "id",
-          "exclusion_reason",
-          "sources"
+          "symbol",
+          "pricing_id",
+          "status",
+          "reason",
+          "sources",
+          "deployments",
+          "matched_chains"
         ],
         "title": "CoinOut"
+      },
+      "Deployment": {
+        "properties": {
+          "feed": {
+            "type": "string",
+            "enum": [
+              "spot",
+              "alpha"
+            ],
+            "title": "Feed"
+          },
+          "chain": {
+            "type": "string",
+            "title": "Chain"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "deposit_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deposit Enabled"
+          },
+          "withdraw_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Withdraw Enabled"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "feed",
+          "chain",
+          "address",
+          "deposit_enabled",
+          "withdraw_enabled"
+        ],
+        "title": "Deployment"
       },
       "EntityBalanceOut": {
         "properties": {
@@ -2860,6 +3293,7 @@
           },
           "coin_id": {
             "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$",
             "title": "Coin Id"
           }
         },
@@ -2870,6 +3304,42 @@
           "coin_id"
         ],
         "title": "ExclusionOut"
+      },
+      "FuturesMappingInput": {
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Symbol"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "symbol"
+        ],
+        "title": "FuturesMappingInput"
+      },
+      "FuturesMappingOut": {
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Symbol"
+          },
+          "base": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Base"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "symbol",
+          "base"
+        ],
+        "title": "FuturesMappingOut"
       },
       "HTTPValidationError": {
         "properties": {
@@ -2896,15 +3366,22 @@
             "title": "Kind"
           },
           "account_id": {
-            "type": "string",
-            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Account Id"
           },
           "coin_id": {
             "anyOf": [
               {
                 "type": "string",
-                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$"
               },
               {
                 "type": "null"
@@ -2930,7 +3407,6 @@
         "type": "object",
         "required": [
           "kind",
-          "account_id",
           "interval_seconds"
         ],
         "title": "JobInput"
@@ -2966,15 +3442,22 @@
             "title": "Kind"
           },
           "account_id": {
-            "type": "string",
-            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Account Id"
           },
           "coin_id": {
             "anyOf": [
               {
                 "type": "string",
-                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$"
               },
               {
                 "type": "null"
@@ -3002,16 +3485,27 @@
           "next_run": {
             "type": "number",
             "title": "Next Run"
+          },
+          "wait_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Reason"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
           "kind",
-          "account_id",
           "interval_seconds",
           "id",
-          "next_run"
+          "next_run",
+          "wait_reason"
         ],
         "title": "JobOut"
       },
@@ -3068,7 +3562,7 @@
         "properties": {
           "pricing_id": {
             "type": "string",
-            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
             "title": "Pricing Id"
           }
         },
@@ -3100,7 +3594,7 @@
               {
                 "items": {
                   "type": "string",
-                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$"
                 },
                 "type": "array"
               },
@@ -3115,7 +3609,7 @@
               {
                 "items": {
                   "type": "string",
-                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$"
                 },
                 "type": "array"
               },

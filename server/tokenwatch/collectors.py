@@ -93,13 +93,14 @@ def parse_transfers(payload):
 
 
 def eligible_coins():
-    return select(Coin).where(Coin.verified, Coin.pricing_id.is_not(None),
+    return select(Coin).where(Coin.status == "supported", Coin.pricing_id.is_not(None),
                               ~select(Exclusion.coin_id).where(Exclusion.coin_id == Coin.id).exists())
 
 
 class Collectors:
-    def __init__(self, store, gate, settings, clock=time.time, today=lambda: now().date()):
+    def __init__(self, store, gate, settings, clock=time.time, today=lambda: now().date(), catalog=None):
         self.store, self.gate, self.settings, self.clock, self.today = store, gate, settings, clock, today
+        self.catalog = catalog
 
     async def transfers(self, job):
         with self.store() as db:
@@ -167,13 +168,13 @@ class Collectors:
     async def daily(self, job):
         day = self.today()
         with self.store() as db:
-            coins = db.scalars(eligible_coins().where(~select(DailyCollection.coin_id).where(
-                DailyCollection.coin_id == Coin.id, DailyCollection.day == day).exists()).order_by(Coin.id).limit(2)).all()
-        if coins:
-            coin = coins[0]
+            coin = db.scalar(eligible_coins().where(~select(DailyCollection.coin_id).where(
+                DailyCollection.coin_id == Coin.id, DailyCollection.day == day).exists()).order_by(Coin.id).limit(1))
+        if coin:
             await self.daily_coin(job.account_id, coin, day, job.options["balance_min"])
-            if len(coins) > 1:
-                return self.clock()
+            return self.clock()
+        if self.catalog is not None and await self.catalog.match_next(job):
+            return self.clock()
         midnight = datetime.combine(day + timedelta(days=1), datetime.min.time(), timezone.utc).timestamp()
         return min(self.clock() + job.interval_seconds, max(midnight, self.clock()))
 

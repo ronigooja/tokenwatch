@@ -6,11 +6,11 @@ from collections import defaultdict
 from datetime import timedelta
 from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import and_, delete, or_, select
 
 from .db import Account, Job, Snapshot, Transfer, now
 from .rules import alert
-from .upstream import AuthRequired, Blocked, RateLimited, UpstreamError
+from .upstream import AuthRequired, Blocked, RateLimited, RequestRejected, UNSUPPORTED_TOKEN, UpstreamError
 
 
 logger = logging.getLogger(__name__)
@@ -18,6 +18,14 @@ logger = logging.getLogger(__name__)
 
 class AccountUnavailable(Exception):
     pass
+
+
+class DistributionWait(AccountUnavailable):
+    def __init__(self, reason, retry_at):
+        self.reason, self.retry_at = reason, retry_at
+
+
+PAUSING_ERRORS = (AuthRequired, Blocked, RateLimited, RequestRejected)
 
 
 class RequestGate:
@@ -52,6 +60,32 @@ class RequestGate:
             return "unknown"
 
     async def get(self, account_id, path, params, decode=lambda value: value, probe=False):
+        if account_id is None:
+            while True:
+                with self.store() as db:
+                    active = db.scalars(select(Account).where(Account.status == "active").order_by(
+                        Account.available_at, Account.last_used_at, Account.id)).all()
+                available = [account for account in active if self.status_cache.get(account.id, (None, None))[1]
+                             == "logged_in"]
+                stamp = self.clock()
+                if not available:
+                    raise DistributionWait("no_active_account_with_confirmed_session", stamp + 1)
+                idle = [account for account in available if not self.locks[account.id].locked()]
+                if not idle or (idle[0].available_at > stamp and any(
+                    self.locks[account.id].locked() for account in available
+                )):
+                    retry_at = min(stamp + 1, idle[0].available_at) if idle else stamp + 1
+                    raise DistributionWait("waiting_for_in_flight_account_request", retry_at)
+                account = idle[0]
+                if account.available_at > stamp:
+                    raise DistributionWait("waiting_for_account_request_gate", account.available_at)
+                try:
+                    return await self._get(account.id, path, params, decode, probe)
+                except (AccountUnavailable, *PAUSING_ERRORS):
+                    continue
+        return await self._get(account_id, path, params, decode, probe)
+
+    async def _get(self, account_id, path, params, decode, probe):
         async with self.locks[account_id]:
             while True:
                 with self.store.begin() as db:
@@ -60,18 +94,20 @@ class RequestGate:
                         raise AccountUnavailable(account_id)
                     delay = account.available_at - self.clock()
                     if delay <= 0:
-                        account.available_at = self.clock() + self.settings.request_interval + self.uniform(
+                        account.last_used_at = self.clock()
+                        account.available_at = account.last_used_at + self.settings.request_interval + self.uniform(
                             0, self.settings.request_jitter
                         )
                 if delay <= 0:
                     break
                 await self.sleep(delay)
             try:
-                result = decode(await self.upstream.get_json(account_id, path, params))
+                payload = await self.upstream.get_json(account_id, path, params)
+                result = decode(payload)
             except UpstreamError as exc:
                 if isinstance(exc, AuthRequired):
                     self.remember_status(account_id, "logged_out")
-                if probe and not isinstance(exc, (AuthRequired, Blocked, RateLimited)):
+                if probe and not isinstance(exc, PAUSING_ERRORS):
                     raise
                 with self.store.begin() as db:
                     if account := db.get(Account, account_id):
@@ -81,15 +117,16 @@ class RequestGate:
                         if isinstance(exc, RateLimited) and exc.retry_after is not None:
                             backoff = max(backoff, exc.retry_after)
                         account.available_at = max(account.available_at, self.clock() + backoff)
-                        if isinstance(exc, (AuthRequired, Blocked, RateLimited)):
+                        if isinstance(exc, PAUSING_ERRORS):
                             account.status = "paused"
                             account.pause_reason = type(exc).__name__
                             alert(db, f"upstream:{uuid4()}", "account_paused",
                                   {"account_id": account_id, "reason": account.pause_reason})
                 raise
-            with self.store.begin() as db:
-                if account := db.get(Account, account_id):
-                    account.failures = 0
+            if payload is not UNSUPPORTED_TOKEN:
+                with self.store.begin() as db:
+                    if account := db.get(Account, account_id):
+                        account.failures = 0
             self.remember_status(account_id, "logged_in")
             return result
 
@@ -104,15 +141,18 @@ class Scheduler:
 
     async def run_job(self, job: Job):
         next_run = self.clock() + job.interval_seconds
+        wait_reason = None
         try:
             scheduled = await self.handlers[job.kind](job)
             if scheduled is not None:
                 next_run = scheduled
+        except DistributionWait as exc:
+            next_run, wait_reason = exc.retry_at, exc.reason
         except AccountUnavailable:
             next_run = self.clock()
         except UpstreamError:
             with self.store() as db:
-                if account := db.get(Account, job.account_id):
+                if job.account_id is not None and (account := db.get(Account, job.account_id)):
                     next_run = max(self.clock(), account.available_at)
         except Exception:
             logger.exception("Job %s failed", job.id)
@@ -121,18 +161,19 @@ class Scheduler:
             if current and all(getattr(current, key) == getattr(job, key) for key in (
                 "next_run", "enabled", "account_id", "kind", "coin_id", "options", "interval_seconds"
             )):
-                current.next_run = next_run
+                current.next_run, current.wait_reason = next_run, wait_reason
 
     def tick(self):
         self.running = {key: task for key, task in self.running.items() if not task.done()}
         with self.store() as db:
-            jobs = db.scalars(select(Job).join(Account).where(
-                Job.enabled, Job.next_run <= self.clock(), Account.status == "active",
-                Account.available_at <= self.clock(),
+            jobs = db.scalars(select(Job).outerjoin(Account).where(
+                Job.enabled, Job.next_run <= self.clock(), or_(Job.account_id.is_(None), and_(
+                    Account.status == "active", Account.available_at <= self.clock())),
             ).order_by(Job.next_run, Job.id)).all()
         for job in jobs:
-            if job.account_id not in self.running:
-                self.running[job.account_id] = asyncio.create_task(self.run_job(job))
+            key = job.account_id if job.account_id is not None else job.id
+            if key not in self.running:
+                self.running[key] = asyncio.create_task(self.run_job(job))
 
     def prune(self):
         with self.store.begin() as db:

@@ -18,30 +18,55 @@ class Coin(Base):
     id: Mapped[str] = mapped_column(primary_key=True)
     symbol: Mapped[str] = mapped_column(index=True)
     pricing_id: Mapped[str | None]
-    verified: Mapped[bool] = mapped_column(default=False)
-    exclusion_reason: Mapped[str | None]
+    status: Mapped[str] = mapped_column(default="unknown_onchain", index=True)
+    reason: Mapped[str | None]
     sources: Mapped[list] = mapped_column(default=list)
+    deployments: Mapped[list] = mapped_column(default=list)
+    matched_chains: Mapped[list] = mapped_column(default=list)
+    # Keep catalog eligibility and Arkham outcomes separate so reclassification never
+    # causes another request for an already resolved coin.
+    catalog_status: Mapped[str | None]
+    catalog_reason: Mapped[str | None]
+    match_status: Mapped[str | None]
+    match_reason: Mapped[str | None]
+    automatic_pricing_id: Mapped[str | None]
+    automatic_chains: Mapped[list] = mapped_column(default=list)
+    manual_pricing_id: Mapped[str | None]
+    manual_status: Mapped[str | None]
 
 
 class CoinMapping(Base):
     __tablename__ = "coin_mappings"
-    coin_id: Mapped[str] = mapped_column(primary_key=True)
+    coin_id: Mapped[str] = mapped_column(ForeignKey("coins.id"), primary_key=True)
     pricing_id: Mapped[str]
 
 
 class CatalogCache(Base):
     __tablename__ = "catalog_cache"
     key: Mapped[str] = mapped_column(primary_key=True)
-    payload: Mapped[list] = mapped_column(default=list)
-    refreshed_at: Mapped[float] = mapped_column(default=0)
-    attempted_at: Mapped[float] = mapped_column(default=0)
+    payload: Mapped[dict | None] = mapped_column(JSON)
+    refreshed_at: Mapped[float | None]
+    attempted_at: Mapped[float]
+    error: Mapped[str | None]
 
 
-class CatalogMapping(Base):
-    __tablename__ = "catalog_mappings"
-    symbol: Mapped[str] = mapped_column(primary_key=True)
-    pricing_id: Mapped[str | None]
-    ambiguous: Mapped[bool]
+class FuturesMapping(Base):
+    __tablename__ = "futures_mappings"
+    base: Mapped[str] = mapped_column(primary_key=True)
+    symbol: Mapped[str]
+
+
+class CatalogExclusion(Base):
+    __tablename__ = "catalog_exclusions"
+    kind: Mapped[str] = mapped_column(primary_key=True)
+    value: Mapped[str] = mapped_column(primary_key=True)
+    reason: Mapped[str]
+
+
+class ChainObservation(Base):
+    __tablename__ = "alpha_chain_observations"
+    alpha_chain_id: Mapped[str] = mapped_column(primary_key=True)
+    arkham_chain: Mapped[str] = mapped_column(primary_key=True)
 
 
 class Account(Base):
@@ -52,6 +77,7 @@ class Account(Base):
     pause_reason: Mapped[str | None]
     available_at: Mapped[float] = mapped_column(default=0)
     failures: Mapped[int] = mapped_column(default=0)
+    last_used_at: Mapped[float] = mapped_column(default=0)
 
 
 class Subscription(Base):
@@ -64,12 +90,14 @@ class Job(Base):
     __tablename__ = "jobs"
     id: Mapped[int] = mapped_column(primary_key=True)
     kind: Mapped[str]
-    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), index=True)
-    coin_id: Mapped[str | None] = mapped_column(ForeignKey("coins.id"))
+    account_id: Mapped[str | None] = mapped_column(ForeignKey("accounts.id"), index=True)
+    # A disabled legacy transfer job retains its old selector until reassigned.
+    coin_id: Mapped[str | None]
     options: Mapped[dict] = mapped_column(default=dict)
     interval_seconds: Mapped[float]
     enabled: Mapped[bool] = mapped_column(default=False)
     next_run: Mapped[float] = mapped_column(default=0)
+    wait_reason: Mapped[str | None]
     __table_args__ = (UniqueConstraint("kind", "coin_id"),
                       Index("ix_jobs_singleton_kind", "kind", unique=True, sqlite_where=text("coin_id IS NULL")),
                       {"sqlite_autoincrement": True})
@@ -142,7 +170,7 @@ class Transfer(Base):
 class TransferCoin(Base):
     __tablename__ = "transfer_coins"
     transfer_id: Mapped[str] = mapped_column(ForeignKey("transfers.id", ondelete="CASCADE"), primary_key=True)
-    coin_id: Mapped[str] = mapped_column(ForeignKey("coins.id"), primary_key=True, index=True)
+    coin_id: Mapped[str] = mapped_column(primary_key=True, index=True)
 
 
 class TransferCursor(Base):
@@ -175,7 +203,7 @@ class Event(Base):
     dedupe_key: Mapped[str] = mapped_column(unique=True)
     kind: Mapped[str] = mapped_column(index=True)
     rule_id: Mapped[int | None] = mapped_column(ForeignKey("rules.id", ondelete="SET NULL"))
-    coin_id: Mapped[str | None] = mapped_column(ForeignKey("coins.id", ondelete="SET NULL"), index=True)
+    coin_id: Mapped[str | None] = mapped_column(index=True)
     group_key: Mapped[str | None] = mapped_column(index=True)
     level: Mapped[str] = mapped_column(index=True)
     push: Mapped[bool]
@@ -200,6 +228,32 @@ class PushLog(Base):
     sent_at: Mapped[datetime] = mapped_column(default=now)
 
 
+def migrate_v1(connection):
+    execute = connection.exec_driver_sql
+    execute("ALTER TABLE accounts ADD COLUMN last_used_at FLOAT NOT NULL DEFAULT 0")
+    execute("CREATE TEMP TABLE saved_jobs AS SELECT * FROM jobs")
+    execute("CREATE TEMP TABLE saved_job_seq AS SELECT seq FROM sqlite_sequence WHERE name='jobs'")
+    execute("CREATE TEMP TABLE saved_transfer_coins AS SELECT * FROM transfer_coins")
+    execute("CREATE TEMP TABLE saved_events AS SELECT * FROM events")
+    execute("CREATE TEMP TABLE saved_event_seq AS SELECT seq FROM sqlite_sequence WHERE name='events'")
+    for table in ("jobs", "coin_subscriptions", "exclusions", "daily_entity_balances", "daily_collections",
+                  "transfer_coins", "transfer_cursors", "coin_mappings", "catalog_mappings", "catalog_cache", "events", "coins"):
+        execute(f"DROP TABLE IF EXISTS {table}")
+    Base.metadata.create_all(connection)
+    execute("""INSERT INTO jobs (id, kind, account_id, coin_id, options, interval_seconds, enabled, next_run, wait_reason)
+        SELECT id, kind, account_id, coin_id, options, interval_seconds,
+            CASE WHEN kind='transfers' THEN 0 ELSE enabled END, next_run,
+            CASE WHEN kind='transfers' THEN 'coin_reassignment_required' END FROM saved_jobs""")
+    execute("INSERT INTO events SELECT * FROM saved_events")
+    for name, saved in (("jobs", "saved_job_seq"), ("events", "saved_event_seq")):
+        execute(f"INSERT INTO sqlite_sequence (name, seq) SELECT '{name}', seq FROM {saved} "
+                f"WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name='{name}')")
+        execute(f"UPDATE sqlite_sequence SET seq=MAX(seq, COALESCE((SELECT seq FROM {saved}), 0)) WHERE name='{name}'")
+    execute("INSERT INTO transfer_coins SELECT * FROM saved_transfer_coins")
+    for table in ("saved_jobs", "saved_job_seq", "saved_transfer_coins", "saved_events", "saved_event_seq"):
+        execute(f"DROP TABLE {table}")
+
+
 def open_store(path: Path):
     engine = create_engine(URL.create("sqlite+pysqlite", database=str(path)), connect_args={"timeout": 5})
 
@@ -210,14 +264,18 @@ def open_store(path: Path):
 
     with engine.connect() as connection:
         connection.execute(text("PRAGMA journal_mode=WAL"))
+        connection.execute(text("PRAGMA foreign_keys=OFF"))
         connection.execute(text("BEGIN IMMEDIATE"))
         version = connection.execute(text("PRAGMA user_version")).scalar_one()
         if version == 0:
             Base.metadata.create_all(connection)
-            connection.execute(text("PRAGMA user_version=1"))
-        elif version != 1:
+        elif version == 1:
+            migrate_v1(connection)
+        elif version != 2:
             raise RuntimeError(f"Unsupported database schema version: {version}")
-        CatalogCache.__table__.create(connection, checkfirst=True)
-        CatalogMapping.__table__.create(connection, checkfirst=True)
+        if version == 1 and connection.exec_driver_sql("PRAGMA foreign_key_check").first():
+            raise RuntimeError("Foreign key violation after coin schema migration")
+        connection.execute(text("PRAGMA user_version=2"))
         connection.commit()
+        connection.execute(text("PRAGMA foreign_keys=ON"))
     return sessionmaker(engine, expire_on_commit=False)

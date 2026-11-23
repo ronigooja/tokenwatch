@@ -12,7 +12,8 @@ from email.utils import parsedate_to_datetime
 from typing import Any, TypeVar
 from urllib.parse import urlencode
 
-from ..upstream import AuthRequired, BadResponse, Blocked, RateLimited
+from ..upstream import (AuthRequired, BadResponse, Blocked, RateLimited, RequestRejected,
+                        TOKEN_ADDRESSES_PREFIX, UNSUPPORTED_TOKEN)
 from .config import AccountConfig, BrowserConfig, write_accounts
 from .transport import (
     API_ORIGIN, BrowserSession, Forward, Forwarder, Launcher, PlaywrightLauncher,
@@ -48,16 +49,27 @@ def _invalid_json_constant(value: str) -> None:
     raise ValueError
 
 
-def _decode(response: Response, now: float) -> Any:
+def _decode(response: Response, now: float, path: str = "") -> Any:
     if response.status == 401 or "denied at anonymous" in response.body.lower():
         raise AuthRequired("Upstream login required")
     if response.status == 429:
         raise RateLimited("Upstream rate limited", retry_after=_retry_after(response.retry_after, now))
+    if (response.cf_mitigated or "").lower() == "challenge":
+        raise Blocked("Upstream Cloudflare challenge")
     if response.status == 403:
         body = response.body.lower()
         markers = ("just a moment", "/cdn-cgi/challenge-platform/", "cloudflare ray id")
-        if (response.cf_mitigated or "").lower() == "challenge" or any(m in body for m in markers):
+        if any(m in body for m in markers):
             raise Blocked("Upstream Cloudflare challenge")
+    if response.status == 400 and re.fullmatch(re.escape(TOKEN_ADDRESSES_PREFIX) + r"[a-zA-Z0-9_.-]+", path):
+        try:
+            body = json.loads(response.body, parse_constant=_invalid_json_constant)
+        except (ValueError, RecursionError):
+            body = None
+        if isinstance(body, dict) and set(body) == {"message"}:
+            return UNSUPPORTED_TOKEN
+    if response.status in (400, 403):
+        raise RequestRejected(f"Unexpected upstream HTTP status: {response.status}")
     if not 200 <= response.status < 300:
         raise BadResponse(f"Unexpected upstream HTTP status: {response.status}")
     try:
@@ -139,7 +151,7 @@ class BrowserUpstreamClient:
                 "X-Payload": sign_payload(path, timestamp, self._config.signing_key),
             }
             response = await _through(instance.forward, lambda: instance.session.fetch(url, headers))
-            return _decode(response, self._clock())
+            return _decode(response, self._clock(), path)
 
     async def account_status(self, account_id: str) -> str:
         try:

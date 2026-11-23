@@ -11,6 +11,8 @@ def safe_ref(value: str) -> str:
 
 
 Ref = Annotated[str, Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"), AfterValidator(safe_ref)]
+CoinRef = Annotated[str, Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$")]
+CatalogSymbol = Annotated[str, Field(min_length=1)]
 NonNegative = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 Positive = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 Interval = Literal["7d", "14d", "30d"]
@@ -25,26 +27,53 @@ class Schema(BaseModel):
     model_config = ConfigDict(extra="forbid", from_attributes=True)
 
 
-class CoinInput(Schema):
-    symbol: Ref
-    pricing_id: Ref | None = None
-    verified: bool = False
-
-    @model_validator(mode="after")
-    def validate_pricing_id(self):
-        if self.verified and not self.pricing_id:
-            raise ValueError("verified coins need a pricing ID")
-        return self
+CoinStatus = Literal["supported", "no_match", "ambiguous", "unsupported", "needs_manual_mapping",
+                     "unknown_onchain", "excluded", "no_futures", "pending_match", "pending_support"]
+Feed = Literal["spot", "alpha"]
 
 
-class CoinOut(CoinInput):
-    id: str
-    exclusion_reason: str | None
-    sources: list[dict]
+class Deployment(Schema):
+    feed: Feed
+    chain: str
+    address: str | None
+    deposit_enabled: bool | None
+    withdraw_enabled: bool | None
+
+
+class CoinOut(Schema):
+    id: CoinRef
+    symbol: str
+    pricing_id: Ref | None
+    status: CoinStatus
+    reason: str | None
+    sources: list[Feed]
+    deployments: list[Deployment]
+    matched_chains: list[str]
+
+
+class CatalogStatus(Schema):
+    status: Literal["validated", "unknown"]
+    attempted_at: float | None
+    refreshed_at: float | None
+    error: str | None
+
+
+class FuturesMappingInput(Schema):
+    symbol: CatalogSymbol
+
+
+class FuturesMappingOut(FuturesMappingInput):
+    base: CatalogSymbol
+
+
+class ChainObservationOut(Schema):
+    alpha_chain_id: str
+    arkham_chains: list[str]
+    conflict: bool
 
 
 class MappingInput(Schema):
-    pricing_id: Ref
+    pricing_id: Annotated[str, Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"), AfterValidator(safe_ref)]
 
 
 class SubscriptionInput(Schema):
@@ -112,7 +141,15 @@ class ExclusionInput(Schema):
 
 
 class ExclusionOut(ExclusionInput):
-    coin_id: str
+    coin_id: CoinRef
+
+
+PolicyKind = Literal["flag", "tag"]
+
+
+class CatalogExclusionOut(ExclusionInput):
+    kind: PolicyKind
+    value: CatalogSymbol
 
 
 class JobOptions(Schema):
@@ -121,8 +158,8 @@ class JobOptions(Schema):
 
 class JobInput(Schema):
     kind: Literal["transfers", "daily", "coin_catalog"]
-    account_id: Ref
-    coin_id: Ref | None = None
+    account_id: Ref | None = None
+    coin_id: CoinRef | None = None
     options: JobOptions = Field(default_factory=JobOptions)
     interval_seconds: Positive
     enabled: bool = False
@@ -139,11 +176,12 @@ class JobInput(Schema):
 class JobOut(JobInput):
     id: int
     next_run: float
+    wait_reason: str | None
 
 
 class RuleConditions(Schema):
-    coins_include: list[Ref] | None = None
-    coins_exclude: list[Ref] | None = None
+    coins_include: list[CoinRef] | None = None
+    coins_exclude: list[CoinRef] | None = None
     entities_include: list[str] | None = None
     entities_exclude: list[str] | None = None
     direction: TransferDirection | Literal["increase", "decrease"] | None = None

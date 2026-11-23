@@ -1,6 +1,10 @@
 from typing import Any, Protocol
 
 
+TOKEN_ADDRESSES_PREFIX = "/token/addresses/"
+UNSUPPORTED_TOKEN = object()
+
+
 class UpstreamError(Exception):
     pass
 
@@ -23,6 +27,10 @@ class RateLimited(UpstreamError):
 
 class BadResponse(UpstreamError):
     """Non-JSON body or an unexpected status."""
+
+
+class RequestRejected(BadResponse):
+    """Unexpected HTTP 400 or non-challenge HTTP 403."""
 
 
 class UpstreamClient(Protocol):

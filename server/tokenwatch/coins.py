@@ -1,25 +1,24 @@
 import asyncio
 import re
 import time
+from collections import defaultdict
 from dataclasses import dataclass
-from typing import Protocol
 
 import httpx
 from sqlalchemy import select
 
-from .collectors import BALANCE_PATH, balance_params, parse_balances
-from .db import CatalogCache, CatalogMapping, Coin, CoinMapping, Exclusion
+from .db import CatalogCache, CatalogExclusion, ChainObservation, Coin, CoinMapping, Exclusion, FuturesMapping
+from .upstream import BadResponse, TOKEN_ADDRESSES_PREFIX, UNSUPPORTED_TOKEN
 
 
 SPOT_URL = "https://api.binance.com/api/v3/exchangeInfo"
 ALPHA_URL = "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
-GECKO_URL = "https://api.coingecko.com/api/v3/coins/list?include_platform=true"
-WEEK = 7 * 24 * 3600
-COIN_ID = re.compile(r"[A-Z0-9][A-Z0-9_.-]{0,127}")
-# Only explicit chain identities are eligible for contract matching.
-PLATFORMS = {"1": "ethereum", "56": "binance-smart-chain", "137": "polygon-pos",
-             "42161": "arbitrum-one", "10": "optimistic-ethereum", "8453": "base",
-             "43114": "avalanche", "solana": "solana", "CT_501": "solana"}
+NETWORK_URL = "https://www.binance.com/bapi/capital/v1/public/capital/getNetworkCoinAll"
+ASSET_URL = "https://www.binance.com/bapi/asset/v2/public/asset/asset/get-all-asset"
+FUTURES_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+SEARCH_PATH = "/intelligence/search"
+EVM = re.compile(r"0x[0-9a-f]{40}", re.IGNORECASE)
+PRICING_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}")
 
 
 async def public_json(client, url, sleep=asyncio.sleep):
@@ -34,147 +33,303 @@ async def public_json(client, url, sleep=asyncio.sleep):
             await sleep(30 * 2 ** attempt)
 
 
-class CoinGeckoResolver:
-    def __init__(self, store, transport=None, clock=time.time):
-        self.store, self.transport, self.clock = store, transport, clock
-        self.lock = asyncio.Lock()
-
-    async def coins(self):
-        async with self.lock:
-            stamp = self.clock()
-            with self.store.begin() as db:
-                cache = db.get(CatalogCache, "coingecko")
-                if cache and stamp - cache.attempted_at < WEEK:
-                    return cache.payload
-                if cache is None:
-                    cache = CatalogCache(key="coingecko", payload=[])
-                    db.add(cache)
-                cache.attempted_at = stamp
-            async with httpx.AsyncClient(timeout=20, transport=self.transport) as client:
-                payload = await public_json(client, GECKO_URL)
-            if not isinstance(payload, list) or not all(
-                isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"] and
-                isinstance(row.get("symbol"), str) and isinstance(row.get("platforms"), dict) and
-                all(isinstance(k, str) and isinstance(v, (str, type(None))) for k, v in row["platforms"].items())
-                for row in payload
-            ):
-                raise ValueError("Invalid CoinGecko catalog")
-            with self.store.begin() as db:
-                cache = db.get(CatalogCache, "coingecko")
-                cache.payload, cache.refreshed_at = payload, stamp
-            return payload
-
-    async def resolve(self, candidate):
-        coins = await self.coins()
-        contracts = set()
-        for source in candidate.sources:
-            platform = PLATFORMS.get(source.get("chain_id"))
-            address = source.get("contract_address")
-            if not platform or not address:
-                continue
-            normalize = str.lower if address.startswith("0x") else lambda value: value
-            contracts.update(row["id"] for row in coins if row["platforms"].get(platform) and
-                             normalize(row["platforms"][platform]) == normalize(address))
-        matches = contracts
-        if not matches and any(source["feed"] == "spot" for source in candidate.sources):
-            matches = {row["id"] for row in coins if row["symbol"].upper() == candidate.symbol}
-        ambiguous = len(matches) > 1
-        pricing_id = next(iter(matches)) if len(matches) == 1 else None
-        with self.store.begin() as db:
-            db.merge(CatalogMapping(symbol=candidate.symbol, pricing_id=pricing_id, ambiguous=ambiguous))
-        return pricing_id
+def field(row, name, kind, *, empty=False):
+    value = row.get(name) if isinstance(row, dict) else None
+    if type(value) is not kind or (kind in (str, list) and not value and not empty):
+        raise ValueError(f"invalid {name}")
+    return value
 
 
-@dataclass(frozen=True)
+def envelope(payload):
+    if field(payload, "code", str) != "000000":
+        raise ValueError("unsuccessful Binance response")
+    return field(payload, "data", list)
+
+
+def network(row):
+    return {"chain": field(row, "network", str), "address": field(row, "contractAddress", str, empty=True) or None,
+            "deposit_enabled": field(row, "depositEnable", bool), "withdraw_enabled": field(row, "withdrawEnable", bool),
+            "feed": "spot"}
+
+
+def indexed(rows, key, parse):
+    result = {}
+    for row in rows:
+        symbol = field(row, key, str).upper()
+        if symbol in result:
+            raise ValueError(f"repeated {key}")
+        result[symbol] = parse(row)
+    return result
+
+
+def parse_assets(row):
+    tags = field(row, "tags", list, empty=True)
+    if not all(isinstance(tag, str) and tag for tag in tags):
+        raise ValueError("invalid asset tag")
+    return {"fiat": field(row, "isLegalMoney", bool), "ledger_only": field(row, "isLedgerOnly", bool), "tags": tags}
+
+
+def parse_feeds(spot, alpha, networks, assets, futures):
+    symbols, tokens, bases = set(), [], set()
+    for pair in field(spot, "symbols", list):
+        status = field(pair, "status", str)
+        symbol = field(pair, "baseAsset", str).upper()
+        if field(pair, "isSpotTradingAllowed", bool) and status == "TRADING":
+            symbols.add(symbol)
+    for row in envelope(alpha):
+        chain = row.get("chainId") if isinstance(row, dict) else None
+        if not (type(chain) is str and chain or type(chain) is int and chain > 0):
+            raise ValueError("invalid Alpha chainId")
+        tokens.append({"symbol": field(row, "symbol", str).upper(), "chain": str(chain),
+                       "address": field(row, "contractAddress", str)})
+    for row in field(futures, "symbols", list):
+        base = field(row, "baseAsset", str).upper()
+        if [field(row, name, str, empty=name == "contractType")
+                for name in ("contractType", "status", "underlyingType", "quoteAsset", "marginAsset")] == [
+                "PERPETUAL", "TRADING", "COIN", "USDT", "USDT"]:
+            bases.add(base)
+    snapshot = {"spot": sorted(symbols), "alpha": tokens, "futures": sorted(bases),
+            "networks": indexed(envelope(networks), "coin", lambda row: {
+                "fiat": field(row, "isLegalMoney", bool),
+                "deployments": [network(item) for item in field(row, "networkList", list, empty=True)]}),
+            "assets": indexed(envelope(assets), "assetCode", parse_assets)}
+    identities = [row.id for row in candidates(snapshot)]
+    if len(identities) != len(set(identities)):
+        raise ValueError("Binance assets share a canonical identity")
+    return snapshot
+
+
+def normalize(address):
+    return address.lower() if EVM.fullmatch(address) else address
+
+
+def key_part(value):
+    return value if re.fullmatch(r"[a-zA-Z0-9_.-]+", value) else "~" + value.encode().hex()
+
+
+@dataclass
 class Candidate:
+    id: str
     symbol: str
-    sources: list[dict]
+    feed: str
+    deployments: list[dict]
 
 
-class Resolver(Protocol):
-    async def resolve(self, candidate: Candidate) -> str | None: ...
+def deployment_keys(deployments):
+    return {(row["chain"], normalize(row["address"])) for row in deployments if row["address"]}
 
 
-class KnownPricingIDResolver:
-    def __init__(self, ids: dict[str, str]):
-        self.ids = ids
+def candidates(snapshot):
+    for symbol in snapshot["spot"]:
+        deployments = snapshot["networks"].get(symbol, {}).get("deployments", [])
+        usable = [row for row in deployments if row["address"] or row["deposit_enabled"] or row["withdraw_enabled"]]
+        if usable:
+            # A same-name native network takes precedence over bridged deployments.
+            anchor = min(usable, key=lambda row: (bool(row["address"] or row["chain"] != symbol), not row["address"],
+                                                row["chain"], normalize(row["address"] or "")))
+            chain, address = key_part(anchor["chain"]), anchor["address"]
+            key = f"spot:{chain}:{key_part(normalize(address))}" if address else f"native:{chain}"
+        else:
+            key = f"unknown:spot:{key_part(symbol)}"
+        yield Candidate(key, symbol, "spot", deployments)
+    grouped = defaultdict(list)
+    for row in snapshot["alpha"]:
+        key = f"alpha:{key_part(row['chain'])}:{key_part(normalize(row['address']))}"
+        grouped[key].append(row)
+    for key, rows in sorted(grouped.items()):
+        # One asset can have multiple display aliases in the feed, but never multiple identities at one address.
+        row = min(rows, key=lambda item: (item["symbol"], item["address"]))
+        yield Candidate(key, row["symbol"], "alpha", [{"feed": "alpha", "chain": row["chain"],
+                                                       "address": row["address"], "deposit_enabled": None,
+                                                       "withdraw_enabled": None}])
 
-    async def resolve(self, candidate: Candidate) -> str | None:
-        return self.ids.get(candidate.symbol)
+
+def classify(candidate, snapshot, futures_symbols, policies):
+    metadata = snapshot["assets"].get(candidate.symbol)
+    networks = snapshot["networks"].get(candidate.symbol)
+    # A spot asset's exchange labels are not proof of the identity of another contract with the same symbol.
+    if candidate.feed == "spot" or (networks and any(
+        row["address"] and normalize(row["address"]) == normalize(candidate.deployments[0]["address"])
+        for row in networks["deployments"]
+    )):
+        reasons = {reason for kind, value, reason in policies if (
+            kind == "flag" and value == "isLegalMoney" and (
+                (metadata and metadata["fiat"]) or (networks and networks["fiat"]))
+            or kind == "tag" and metadata and value in metadata["tags"])}
+        if reasons:
+            return "excluded", "; ".join(sorted(reasons))
+    if candidate.feed == "spot" and (not metadata or not any(
+        row["address"] or row["deposit_enabled"] or row["withdraw_enabled"] for row in candidate.deployments
+    )):
+        return "unknown_onchain", "missing asset metadata or usable Binance network"
+    if candidate.symbol not in futures_symbols:
+        return "no_futures", "no trading USDT-margined coin perpetual"
+    return None, None
 
 
-async def binance_candidates(transport=None):
-    async with httpx.AsyncClient(timeout=20, transport=transport) as client:
-        spot = await public_json(client, SPOT_URL)
-        alpha = await public_json(client, ALPHA_URL)
-    if not isinstance(spot, dict) or not isinstance(spot.get("symbols"), list):
-        raise ValueError("Invalid Binance spot catalog")
-    if not isinstance(alpha, dict) or alpha.get("code") != "000000" or not isinstance(alpha.get("data"), list):
-        raise ValueError("Invalid Binance Alpha catalog")
-    candidates = {}
-    for pair in spot["symbols"]:
-        if not isinstance(pair, dict) or not all(isinstance(pair.get(k), str) and pair[k] for k in ("status", "baseAsset")):
-            raise ValueError("Invalid Binance spot entry")
-        if pair["status"] == "TRADING" and pair.get("isSpotTradingAllowed", True):
-            candidates.setdefault(pair["baseAsset"].upper(), [{"feed": "spot"}])
-    for token in alpha["data"]:
-        if not isinstance(token, dict) or not all(isinstance(token.get(k), str) and token[k] for k in ("symbol", "contractAddress")) or not isinstance(token.get("chainId"), (str, int)):
-            raise ValueError("Invalid Binance Alpha entry")
-        source = {"feed": "alpha", "chain_id": str(token["chainId"]), "contract_address": token["contractAddress"]}
-        sources = candidates.setdefault(token["symbol"].upper(), [])
-        if source not in sources:
-            sources.append(source)
-    return [Candidate(symbol, sources) for symbol, sources in sorted(candidates.items())
-            if COIN_ID.fullmatch(symbol)]
+def search_matches(payload, address):
+    try:
+        field(payload, "bestMatches", list, empty=True)
+        tokens = field(payload, "tokens", list, empty=True)
+        matches = defaultdict(set)
+        for token in tokens:
+            identifier = field(token, "identifier", dict)
+            pricing_id = field(identifier, "pricingID", str)
+            if not PRICING_ID.fullmatch(pricing_id) or ".." in pricing_id:
+                raise ValueError("invalid pricing ID")
+            deployments = field(token, "deployments", list, empty=True)
+            for deployment in [identifier, *deployments]:
+                if deployment is identifier and "address" not in identifier:
+                    continue
+                chain = field(deployment, "chain", str)
+                if normalize(field(deployment, "address", str)) == normalize(address):
+                    matches[pricing_id].add(chain)
+        return matches
+    except ValueError as exc:
+        raise BadResponse("invalid token search payload") from exc
+
+
+def support_status(payload):
+    if payload is UNSUPPORTED_TOKEN:
+        return "unsupported"
+    if not isinstance(payload, dict) or not payload or not all(
+        isinstance(chain, str) and chain and isinstance(value, str) for chain, value in payload.items()
+    ) or "message" in payload:
+        raise BadResponse("invalid token addresses payload")
+    return "supported"
+
+
+def sync_coin(db, coin):
+    """Project catalog and matching state into the API/job-facing fields."""
+    manual = db.get(CoinMapping, coin.id)
+    exclusion = db.get(Exclusion, coin.id)
+    coin.pricing_id = manual.pricing_id if manual else coin.automatic_pricing_id
+    coin.matched_chains = coin.automatic_chains if coin.pricing_id == coin.automatic_pricing_id else []
+    if exclusion:
+        coin.status, coin.reason = "excluded", exclusion.reason
+    elif coin.catalog_status:
+        coin.status, coin.reason = coin.catalog_status, coin.catalog_reason
+    elif manual:
+        coin.status = coin.manual_status if coin.manual_pricing_id == manual.pricing_id else "pending_support"
+        coin.status = coin.status or "pending_support"
+        coin.reason = "Arkham does not support the manual pricing ID" if coin.status == "unsupported" else None
+    elif coin.match_status:
+        coin.status, coin.reason = coin.match_status, coin.match_reason
+    elif not coin.id.startswith("native:") and any(row["address"] for row in coin.deployments):
+        coin.status, coin.reason = "pending_match", None
+    else:
+        coin.status, coin.reason = "needs_manual_mapping", "no searchable contract address"
 
 
 class CoinCatalog:
-    def __init__(self, store, gate, settings, resolver, candidates=binance_candidates):
-        self.store, self.gate, self.settings, self.resolver, self.candidates = store, gate, settings, resolver, candidates
+    def __init__(self, store, gate, transport=None, clock=time.time):
+        self.store, self.gate, self.transport, self.clock = store, gate, transport, clock
+        self.refresh_lock, self.match_lock = asyncio.Lock(), asyncio.Lock()
+
+    async def refresh_snapshot(self):
+        async with self.refresh_lock:
+            stamp = self.clock()
+            try:
+                async with httpx.AsyncClient(timeout=20, transport=self.transport) as client:
+                    feeds = [await public_json(client, url)
+                             for url in (SPOT_URL, ALPHA_URL, NETWORK_URL, ASSET_URL, FUTURES_URL)]
+                snapshot = parse_feeds(*feeds)
+                error = None
+            except httpx.HTTPError:
+                snapshot, error = None, "Binance catalog request failed"
+            except ValueError as exc:
+                snapshot, error = None, f"Invalid Binance catalog: {exc}"
+            with self.store.begin() as db:
+                cache = db.get(CatalogCache, "binance")
+                if cache is None:
+                    cache = CatalogCache(key="binance")
+                    db.add(cache)
+                if snapshot is not None and cache.payload:
+                    previous = cache.payload
+                    for symbol in set(snapshot["spot"]) & set(previous["spot"]):
+                        if (symbol in previous["assets"] and symbol not in snapshot["assets"] or
+                                previous["networks"].get(symbol, {}).get("deployments") and
+                                not snapshot["networks"].get(symbol, {}).get("deployments")):
+                            snapshot, error = None, "Binance catalog lost metadata for a trading spot asset"
+                            break
+                cache.attempted_at, cache.error = stamp, error
+                if snapshot is not None:
+                    cache.payload, cache.refreshed_at = snapshot, stamp
+                self.reclassify(db, cache.payload)
+
+    @staticmethod
+    def reclassify(db, snapshot):
+        if snapshot is None:
+            return
+        rows = list(candidates(snapshot))
+        symbols = {candidate.symbol for candidate in rows}
+        mappings = {row.base: row.symbol for row in db.scalars(select(FuturesMapping))}
+        futures = {base if base in symbols else mappings.get(base) for base in snapshot["futures"]}
+        policies = [(row.kind, row.value, row.reason) for row in db.scalars(select(CatalogExclusion))]
+        existing = {row.id: row for row in db.scalars(select(Coin))}
+        for candidate in rows:
+            coin = existing.pop(candidate.id, None)
+            if coin is None:
+                coin = Coin(id=candidate.id, automatic_chains=[])
+                db.add(coin)
+            elif coin.match_status and deployment_keys(coin.deployments).isdisjoint(deployment_keys(candidate.deployments)):
+                coin.match_status = coin.match_reason = coin.automatic_pricing_id = None
+                coin.automatic_chains = []
+            coin.symbol, coin.sources, coin.deployments = candidate.symbol, [candidate.feed], candidate.deployments
+            coin.catalog_status, coin.catalog_reason = classify(candidate, snapshot, futures, policies)
+            sync_coin(db, coin)
+        for coin in existing.values():
+            coin.catalog_status, coin.catalog_reason = "unknown_onchain", "not in the validated Binance catalog"
+            sync_coin(db, coin)
 
     async def refresh(self, job):
-        candidates = await self.candidates()
-        with self.store.begin() as db:
-            seen = {candidate.symbol for candidate in candidates}
-            for coin in db.scalars(select(Coin)):
-                if coin.sources and coin.id not in seen:
-                    coin.verified = False
-                    coin.exclusion_reason = "not_in_binance_feeds"
-        for candidate in candidates:
+        if not getattr(job, "wait_reason", None):
+            await self.refresh_snapshot()
+        while await self.match_next(job):
+            pass
+
+    async def match_next(self, job):
+        async with self.match_lock:
             with self.store() as db:
-                override = db.get(CoinMapping, candidate.symbol)
-            pricing_id = override.pricing_id if override else await self.resolver.resolve(candidate)
-            with self.store.begin() as db:
-                mapping = db.get(CatalogMapping, candidate.symbol)
-                ambiguous = bool(not override and mapping and mapping.ambiguous)
-                coin = db.get(Coin, candidate.symbol)
+                coin = db.scalar(select(Coin).where(Coin.status.in_(("pending_match", "pending_support")))
+                                 .order_by(Coin.id).limit(1))
                 if coin is None:
-                    coin = Coin(id=candidate.symbol, symbol=candidate.symbol)
-                    db.add(coin)
-                checked_empty = coin.pricing_id == pricing_id and coin.exclusion_reason == "no_balance_data"
-                if coin.pricing_id != pricing_id:
-                    coin.verified = False
-                coin.pricing_id, coin.sources = pricing_id, candidate.sources
-                if db.get(Exclusion, candidate.symbol):
-                    coin.exclusion_reason = "globally_excluded"
-                elif not pricing_id:
-                    coin.exclusion_reason = "ambiguous_symbol" if ambiguous else "mapping_required"
-                elif checked_empty:
-                    coin.exclusion_reason = "no_balance_data"
-                elif not coin.verified and not self.settings.allow_pricing_id_checks:
-                    coin.exclusion_reason = "verification_disabled"
-                elif not coin.verified:
-                    coin.exclusion_reason = "verification_pending"
-                else:
-                    coin.exclusion_reason = None
-                should_check = coin.exclusion_reason == "verification_pending"
-            if should_check:
-                params = balance_params("7d", None, [pricing_id])
-                params["limit"] = "1"
-                rows = await self.gate.get(job.account_id, BALANCE_PATH, params,
-                                           parse_balances)
+                    return False
+                manual = db.get(CoinMapping, coin.id)
+            if coin.status == "pending_match":
+                deployment = min((row for row in coin.deployments if row["address"]),
+                                 key=lambda row: (row["chain"], normalize(row["address"])))
+                address = deployment["address"]
+                matches = await self.gate.get(job.account_id, SEARCH_PATH, {"query": address},
+                                              lambda payload: search_matches(payload, address))
                 with self.store.begin() as db:
-                    coin = db.get(Coin, candidate.symbol)
-                    if coin and coin.pricing_id == pricing_id and not db.get(Exclusion, candidate.symbol):
-                        coin.verified = bool(rows)
-                        coin.exclusion_reason = None if rows else "no_balance_data"
+                    current = db.get(Coin, coin.id)
+                    if current and current.match_status is None and (
+                        deployment["chain"], normalize(address)
+                    ) in deployment_keys(current.deployments):
+                        if len(matches) == 1:
+                            pricing_id, chains = next(iter(matches.items()))
+                            current.automatic_pricing_id, current.automatic_chains = pricing_id, sorted(chains)
+                            current.match_status, current.match_reason = "pending_support", None
+                            if deployment["feed"] == "alpha":
+                                for chain in chains:
+                                    db.merge(ChainObservation(alpha_chain_id=deployment["chain"], arkham_chain=chain))
+                        elif matches:
+                            current.match_status, current.match_reason = "ambiguous", "multiple Arkham pricing IDs match the contract"
+                        else:
+                            current.match_status, current.match_reason = "no_match", "no Arkham token matches the contract"
+                        sync_coin(db, current)
+            else:
+                status = await self.gate.get(job.account_id, TOKEN_ADDRESSES_PREFIX + coin.pricing_id, None, support_status)
+                with self.store.begin() as db:
+                    current = db.get(Coin, coin.id)
+                    if current and manual:
+                        override = db.get(CoinMapping, coin.id)
+                        if override and override.pricing_id == manual.pricing_id:
+                            current.manual_pricing_id, current.manual_status = manual.pricing_id, status
+                    elif current and current.automatic_pricing_id == coin.pricing_id:
+                        current.match_status = status
+                        current.match_reason = "Arkham does not support this pricing ID" if status == "unsupported" else None
+                    if current:
+                        sync_coin(db, current)
+            return True

@@ -1,5 +1,6 @@
 import asyncio
 import secrets
+from collections import defaultdict
 from contextlib import asynccontextmanager, suppress
 from datetime import date, datetime, timedelta, timezone
 from dataclasses import replace
@@ -16,14 +17,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import schemas as s
-from .coins import CoinCatalog, CoinGeckoResolver
+from .coins import CoinCatalog, sync_coin
 from .collectors import Collectors, snapshot_diff
 from .config import load_settings
 from .login_session import LoginSessions
 from . import novnc
-from .db import (Account, Coin, CoinMapping, DailyBalance, DailyCollection, Event, Exclusion,
-                 Job, PushLog, Rule, Snapshot, SnapshotRow, Subscription, Transfer, TransferCoin,
-                 now, open_store)
+from .db import (Account, CatalogCache, CatalogExclusion, ChainObservation, Coin, CoinMapping, DailyBalance,
+                 DailyCollection, Event, Exclusion, FuturesMapping, Job, PushLog, Rule, Snapshot,
+                 SnapshotRow, Subscription, Transfer, TransferCoin, now, open_store)
 from .scheduler import AccountUnavailable, RequestGate, Scheduler
 from .upstream import UpstreamError
 from .browser.config import AccountConfig, proxy_parts
@@ -129,13 +130,6 @@ def resource(app, path, model, request_model, response_model, *, key="id", key_t
         add(route, "create", create, "POST", response_model, 201)
 
 
-def validate_coin(db, current, values):
-    values["exclusion_reason"] = ("globally_excluded" if db.get(Exclusion, current.id) else
-                                  None if values["verified"] else "manual_unverified")
-    if current.sources and (mapping := db.get(CoinMapping, current.id)) and mapping.pricing_id != values["pricing_id"]:
-        raise HTTPException(409, "Update the manual mapping before changing the pricing ID")
-
-
 def validate_account(db, current, values):
     if values["status"] == "active":
         values["pause_reason"] = None
@@ -144,31 +138,25 @@ def validate_account(db, current, values):
 
 
 def validate_job(db, current, values):
-    find(db, Account, values["account_id"])
+    if values["account_id"] is not None:
+        find(db, Account, values["account_id"])
     if values["coin_id"]:
         find(db, Coin, values["coin_id"])
     values["next_run"] = 0
+    values["wait_reason"] = None
 
 
 def validate_subscription(db, current, values):
     find(db, Coin, current.coin_id)
 
 
-def validate_exclusion(db, current, values):
-    find(db, Coin, current.coin_id).exclusion_reason = "globally_excluded"
+def reclassify_catalog(db):
+    cache = db.get(CatalogCache, "binance")
+    if cache:
+        CoinCatalog.reclassify(db, cache.payload)
 
 
-def remove_exclusion(db, current):
-    coin = find(db, Coin, current.coin_id)
-    coin.exclusion_reason = None if coin.verified else "unverified"
-
-
-def remove_coin(db, current):
-    if mapping := db.get(CoinMapping, current.id):
-        db.delete(mapping)
-
-
-def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, run_scheduler=True,
+def create_app(settings=None, upstream=None, *, catalog_transport=None, run_scheduler=True,
                timezone_detector=detect_timezone):
     @asynccontextmanager
     async def lifespan(app):
@@ -190,9 +178,8 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
             if client is not None:
                 gate = RequestGate(store, client, config)
                 app.state.gate = gate
-                collectors = Collectors(store, gate, config)
-                catalog = CoinCatalog(store, gate, config, resolver or CoinGeckoResolver(store),
-                                      **({"candidates": candidates} if candidates else {}))
+                catalog = CoinCatalog(store, gate, transport=catalog_transport)
+                collectors = Collectors(store, gate, config, catalog=catalog)
                 app.state.collectors = collectors
                 if run_scheduler:
                     task = asyncio.create_task(Scheduler(store, config, {
@@ -238,13 +225,100 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
         from fastapi.encoders import jsonable_encoder
         return JSONResponse(status_code=422, content={"detail": jsonable_encoder(error.errors())})
 
-    resource(app, "coins", Coin, s.CoinInput, s.CoinOut, validate=validate_coin, remove=remove_coin)
     resource(app, "subscriptions", Subscription, s.SubscriptionInput, s.SubscriptionOut,
-             key="coin_id", validate=validate_subscription)
+             key="coin_id", key_type=s.CoinRef, validate=validate_subscription)
     resource(app, "jobs", Job, s.JobInput, s.JobOut, generated=True, key_type=int, validate=validate_job)
-    resource(app, "exclusions", Exclusion, s.ExclusionInput, s.ExclusionOut, key="coin_id",
-             validate=validate_exclusion, remove=remove_exclusion)
     resource(app, "rules", Rule, s.RuleInput, s.RuleOut, generated=True, key_type=int)
+
+    @app.get("/coins", response_model=list[s.CoinOut], dependencies=auth, operation_id="list_coins")
+    def list_coins(db: DB, status: s.CoinStatus | None = None):
+        query = select(Coin).order_by(Coin.symbol, Coin.id)
+        return db.scalars(query.where(Coin.status == status) if status else query).all()
+
+    @app.get("/coins/{coin_id}", response_model=s.CoinOut, dependencies=auth, operation_id="get_coins")
+    def get_coin(coin_id: s.CoinRef, db: DB):
+        return find(db, Coin, coin_id)
+
+    @app.get("/coin-catalog", response_model=s.CatalogStatus, dependencies=auth)
+    def get_catalog_status(db: DB):
+        cache = db.get(CatalogCache, "binance")
+        return {"status": "validated" if cache and not cache.error else "unknown",
+                "attempted_at": cache.attempted_at if cache else None,
+                "refreshed_at": cache.refreshed_at if cache else None,
+                "error": cache.error if cache else None}
+
+    @app.get("/coin-catalog/chains", response_model=list[s.ChainObservationOut], dependencies=auth)
+    def list_chain_observations(db: DB):
+        observed = defaultdict(list)
+        for row in db.scalars(select(ChainObservation).order_by(ChainObservation.alpha_chain_id, ChainObservation.arkham_chain)):
+            observed[row.alpha_chain_id].append(row.arkham_chain)
+        return [{"alpha_chain_id": chain, "arkham_chains": names, "conflict": len(names) > 1}
+                for chain, names in observed.items()]
+
+    @app.get("/coin-catalog/futures-mappings", response_model=list[s.FuturesMappingOut], dependencies=auth)
+    def list_futures_mappings(db: DB):
+        return db.scalars(select(FuturesMapping).order_by(FuturesMapping.base)).all()
+
+    @app.put("/coin-catalog/futures-mappings/{base}", response_model=s.FuturesMappingOut, dependencies=auth)
+    def put_futures_mapping(base: s.CatalogSymbol, body: s.FuturesMappingInput, db: DB):
+        row = db.merge(FuturesMapping(base=base.upper(), symbol=body.symbol.upper()))
+        db.flush()
+        reclassify_catalog(db)
+        return row
+
+    @app.delete("/coin-catalog/futures-mappings/{base}", status_code=204, dependencies=auth)
+    def delete_futures_mapping(base: s.CatalogSymbol, db: DB):
+        db.delete(find(db, FuturesMapping, base.upper()))
+        db.flush()
+        reclassify_catalog(db)
+        return Response(status_code=204)
+
+    @app.get("/coin-catalog/exclusion-rules", response_model=list[s.CatalogExclusionOut], dependencies=auth)
+    def list_catalog_exclusions(db: DB):
+        return db.scalars(select(CatalogExclusion).order_by(CatalogExclusion.kind, CatalogExclusion.value)).all()
+
+    @app.put("/coin-catalog/exclusion-rules/{kind}/{value}", response_model=s.CatalogExclusionOut, dependencies=auth)
+    def put_catalog_exclusion(kind: s.PolicyKind, value: s.CatalogSymbol, body: s.ExclusionInput, db: DB):
+        if kind == "flag" and value != "isLegalMoney":
+            raise HTTPException(422, "Unknown Binance asset flag")
+        row = db.merge(CatalogExclusion(kind=kind, value=value, reason=body.reason))
+        db.flush()
+        reclassify_catalog(db)
+        return row
+
+    @app.delete("/coin-catalog/exclusion-rules/{kind}/{value}", status_code=204, dependencies=auth)
+    def delete_catalog_exclusion(kind: s.PolicyKind, value: s.CatalogSymbol, db: DB):
+        db.delete(find(db, CatalogExclusion, (kind, value)))
+        db.flush()
+        reclassify_catalog(db)
+        return Response(status_code=204)
+
+    @app.get("/exclusions", response_model=list[s.ExclusionOut], dependencies=auth, operation_id="list_exclusions")
+    def list_exclusions(db: DB):
+        query = select(Coin).where(Coin.status == "excluded").order_by(Coin.id)
+        return [{"coin_id": row.id, "reason": row.reason} for row in db.scalars(query)]
+
+    @app.get("/exclusions/{coin_id}", response_model=s.ExclusionOut, dependencies=auth)
+    def get_exclusion(coin_id: s.CoinRef, db: DB):
+        coin = find(db, Coin, coin_id)
+        if coin.status != "excluded":
+            raise HTTPException(404, "Resource not found")
+        return {"coin_id": coin_id, "reason": coin.reason}
+
+    @app.put("/exclusions/{coin_id}", response_model=s.ExclusionOut, dependencies=auth)
+    def put_exclusion(coin_id: s.CoinRef, body: s.ExclusionInput, db: DB):
+        coin = find(db, Coin, coin_id)
+        row = db.merge(Exclusion(coin_id=coin_id, reason=body.reason))
+        db.flush()
+        sync_coin(db, coin)
+        return row
+
+    @app.delete("/exclusions/{coin_id}", status_code=204, dependencies=auth)
+    def delete_exclusion(coin_id: s.CoinRef, db: DB):
+        db.delete(find(db, Exclusion, coin_id))
+        db.flush()
+        sync_coin(db, find(db, Coin, coin_id))
+        return Response(status_code=204)
 
     def account_out(row, client):
         getter = getattr(client, "account_config", None)
@@ -365,28 +439,27 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
         return {"status": await gate.account_status(account_id) if gate else "unknown"}
 
     @app.get("/coins/{coin_id}/mapping", response_model=s.MappingInput, dependencies=auth)
-    def get_mapping(coin_id: s.Ref, db: DB):
+    def get_mapping(coin_id: s.CoinRef, db: DB):
         return find(db, CoinMapping, coin_id)
 
     @app.put("/coins/{coin_id}/mapping", response_model=s.MappingInput, dependencies=auth)
-    def put_mapping(coin_id: s.Ref, body: s.MappingInput, db: DB):
+    def put_mapping(coin_id: s.CoinRef, body: s.MappingInput, db: DB):
         coin = find(db, Coin, coin_id)
         db.merge(CoinMapping(coin_id=coin_id, pricing_id=body.pricing_id))
-        if coin.pricing_id != body.pricing_id or not coin.verified:
-            coin.pricing_id, coin.verified = body.pricing_id, False
-            coin.exclusion_reason = "globally_excluded" if db.get(Exclusion, coin_id) else "verification_pending"
+        db.flush()
+        sync_coin(db, coin)
         return body
 
     @app.delete("/coins/{coin_id}/mapping", status_code=204, dependencies=auth)
-    def delete_mapping(coin_id: s.Ref, db: DB):
+    def delete_mapping(coin_id: s.CoinRef, db: DB):
         coin = find(db, Coin, coin_id)
         db.delete(find(db, CoinMapping, coin_id))
-        coin.pricing_id, coin.verified = None, False
-        coin.exclusion_reason = "globally_excluded" if db.get(Exclusion, coin_id) else "mapping_required"
+        db.flush()
+        sync_coin(db, coin)
         return Response(status_code=204)
 
     @app.get("/transfers", response_model=list[s.TransferOut], dependencies=auth)
-    def list_transfers(db: DB, coin_id: s.Ref | None = None, start: datetime | None = None, end: datetime | None = None,
+    def list_transfers(db: DB, coin_id: s.CoinRef | None = None, start: datetime | None = None, end: datetime | None = None,
                        min_usd: s.NonNegative | None = None, max_usd: s.NonNegative | None = None,
                        direction: s.TransferDirection | None = None, entity: str | None = None,
                        address: str | None = None, chain: str | None = None, txhash: str | None = None,
@@ -413,7 +486,7 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
                 for row in rows]
 
     @app.get("/events", response_model=list[s.EventOut], dependencies=auth)
-    def list_events(db: DB, level: s.Level | None = None, kind: str | None = None, coin_id: s.Ref | None = None,
+    def list_events(db: DB, level: s.Level | None = None, kind: str | None = None, coin_id: s.CoinRef | None = None,
                     rule_id: int | None = None, read: bool | None = None, start: datetime | None = None,
                     end: datetime | None = None, limit: Page = 100, offset: Offset = 0):
         query = add_bounds(select(Event), Event.created_at, utc_naive(start) if start else None,
@@ -432,7 +505,7 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
         return row
 
     @app.get("/balances", response_model=s.BalanceCurve, dependencies=auth)
-    def balance_curve(coin_id: s.Ref, entity_id: Annotated[list[str], Query(min_length=1, max_length=100)], db: DB,
+    def balance_curve(coin_id: s.CoinRef, entity_id: Annotated[list[str], Query(min_length=1, max_length=100)], db: DB,
                       start: date | None = None, end: date | None = None):
         find(db, Coin, coin_id)
         query = select(DailyBalance).where(DailyBalance.coin_id == coin_id, DailyBalance.entity_id.in_(entity_id))
@@ -443,7 +516,7 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
         return {"coin_id": coin_id, "days": db.scalars(days.order_by(DailyCollection.day)).all(), "series": series}
 
     @app.get("/coins/{coin_id}/entities", response_model=list[s.EntityBalanceOut], dependencies=auth)
-    def coin_entities(coin_id: s.Ref, db: DB, days: Annotated[int, Query(ge=1, le=36500)] = 30):
+    def coin_entities(coin_id: s.CoinRef, db: DB, days: Annotated[int, Query(ge=1, le=36500)] = 30):
         find(db, Coin, coin_id)
         latest = select(DailyBalance.entity_id, func.max(DailyBalance.day).label("day")).where(
             DailyBalance.coin_id == coin_id,

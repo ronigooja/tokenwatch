@@ -6,15 +6,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from httpx import MockTransport, Response
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 
 from tokenwatch.api import create_app
-from tokenwatch.coins import ALPHA_URL, SPOT_URL, Candidate, CoinCatalog, KnownPricingIDResolver, binance_candidates
 from tokenwatch.collectors import Collectors
 from tokenwatch.config import Settings, load_settings
-from tokenwatch.db import (Account, Coin, CoinMapping, DailyBalance, DailyCollection, Event, Exclusion,
+from tokenwatch.db import (Account, Coin, DailyBalance, DailyCollection, Event, Exclusion,
                            Job, PushLog, Rule, Subscription, Transfer, TransferCursor, open_store)
 from tokenwatch.scheduler import AccountUnavailable, RequestGate, Scheduler
 from tokenwatch.upstream import AuthRequired, BadResponse, Blocked, RateLimited
@@ -58,7 +56,7 @@ def core(settings):
     store = open_store(settings.database)
     with store.begin() as db:
         db.add_all([Account(id="a", proxy_ref="p"), Account(id="b", proxy_ref="q"),
-                    Coin(id="ABC", symbol="ABC", pricing_id="abc", verified=True)])
+                    Coin(id="ABC", symbol="ABC", pricing_id="abc", status="supported")])
         db.flush()
         db.add(Subscription(coin_id="ABC"))
     fake, clock = FakeUpstream(), Clock()
@@ -91,7 +89,7 @@ def test_config_environment_and_migration(settings, tmp_path, monkeypatch):
         store = open_store(loaded.database)
         with store() as db:
             assert db.scalar(text("PRAGMA journal_mode")) == "wal"
-            assert db.scalar(text("PRAGMA user_version")) == 1
+            assert db.scalar(text("PRAGMA user_version")) == 2
         store.kw["bind"].dispose()
 
 
@@ -179,7 +177,7 @@ def test_transfers_dedup_adaptive_and_gap(core):
 def test_daily_truncation_exclusion_and_balance_rule(core):
     store, fake, _, _, collectors = core
     with store.begin() as db:
-        db.add(Coin(id="NO", symbol="NO", pricing_id="no", verified=True))
+        db.add(Coin(id="NO", symbol="NO", pricing_id="no", status="supported"))
         db.add(Rule(name="daily", enabled=True, source="balance_diff", level="normal", push=False,
                     conditions={"min_balance_change_pct": 50, "direction": "increase"}))
         db.flush()
@@ -235,56 +233,6 @@ def test_transfer_rules_cooldown_merge_and_filters(core):
         assert by_level["important"].data["id"] == "b"
 
 
-def test_coin_catalog_requires_mapping_and_opt_in(core, settings):
-    store, fake, _, gate, _ = core
-    async def candidates():
-        return [Candidate("SPOT", [{"feed": "spot"}]), Candidate("ALPHA", [{"feed": "alpha"}]),
-                Candidate("UNMAPPED", [{"feed": "spot"}])]
-    job = SimpleNamespace(account_id="a")
-    catalog = CoinCatalog(store, gate, settings, KnownPricingIDResolver({"SPOT": "spot"}), candidates)
-    with store.begin() as db:
-        db.add(CoinMapping(coin_id="ALPHA", pricing_id="alpha"))
-    asyncio.run(catalog.refresh(job))
-    assert not fake.calls
-    catalog.settings = settings.model_copy(update={"allow_pricing_id_checks": True})
-    fake.responses.extend([[balance("entity")], []])
-    asyncio.run(catalog.refresh(job))
-    asyncio.run(catalog.refresh(job))
-    with store() as db:
-        assert db.get(Coin, "SPOT").verified
-        assert db.get(Coin, "ALPHA").exclusion_reason == "no_balance_data"
-        assert db.get(Coin, "UNMAPPED").exclusion_reason == "mapping_required"
-    assert len(fake.calls) == 2
-
-    assert all(call[2]["limit"] == "1" for call in fake.calls)
-
-
-def test_binance_spot_alpha_union():
-    feeds = {
-        SPOT_URL: {"symbols": [{"status": "TRADING", "baseAsset": "ABC", "quoteAsset": "USD"},
-                               {"status": "BREAK", "baseAsset": "NO", "quoteAsset": "USD"}]},
-        ALPHA_URL: {"code": "000000", "data": [{"symbol": "abc", "chainId": "1", "contractAddress": "0x1"},
-                             {"symbol": "DEF", "chainId": "2", "contractAddress": "0x2"}]},
-    }
-    transport = MockTransport(lambda request: Response(200, json=feeds[str(request.url)]))
-    candidates = asyncio.run(binance_candidates(transport))
-    assert {entry.symbol for entry in candidates} == {"ABC", "DEF"}
-    assert candidates[0].sources == [{"feed": "spot"}, {"feed": "alpha", "chain_id": "1", "contract_address": "0x1"}]
-
-
-def test_binance_candidates_skip_symbols_the_api_cannot_address():
-    feeds = {
-        SPOT_URL: {"symbols": [{"status": "TRADING", "baseAsset": "ABC", "quoteAsset": "USD"}]},
-        ALPHA_URL: {"code": "000000", "data": [
-            {"symbol": "$PAAL", "chainId": "1", "contractAddress": "0x1"},
-            {"symbol": "人生K线", "chainId": "56", "contractAddress": "0x2"},
-            {"symbol": "FREEDOM OF MONEY", "chainId": "56", "contractAddress": "0x3"},
-        ]},
-    }
-    transport = MockTransport(lambda request: Response(200, json=feeds[str(request.url)]))
-    assert [entry.symbol for entry in asyncio.run(binance_candidates(transport))] == ["ABC"]
-
-
 def test_api_crud_snapshots_filters_and_socket(settings):
     fake = FakeUpstream()
     fake.responses.extend([{"id": "user"}, [balance("a"), balance("b")], [balance("b", 2), balance("c")]])
@@ -295,9 +243,11 @@ def test_api_crud_snapshots_filters_and_socket(settings):
         client.headers.update(headers)
         with app.state.store.begin() as db:
             db.add(Account(id="a", proxy_ref="p", status="active"))
+            db.add(Coin(id="ABC", symbol="ABC", pricing_id="abc", automatic_pricing_id="abc",
+                        match_status="supported", status="supported"))
         assert client.put("/accounts/a", json={"status": "active"}).status_code == 200
         assert client.get("/accounts/a/session").json() == {"status": "logged_in"}
-        assert client.put("/coins/ABC", json={"symbol": "ABC", "pricing_id": "abc", "verified": True}).status_code == 200
+        assert client.get("/coins/ABC").json()["status"] == "supported"
         assert client.put("/subscriptions/ABC", json={"enabled": True}).status_code == 200
         assert client.post("/jobs", json={"kind": "transfers", "account_id": "a", "coin_id": "ABC",
                                           "interval_seconds": 60}).status_code == 201
@@ -306,6 +256,8 @@ def test_api_crud_snapshots_filters_and_socket(settings):
         assert client.put("/exclusions/ABC", json={"reason": "test"}).status_code == 200
         assert client.delete("/exclusions/ABC").status_code == 204
         assert client.put("/coins/ABC/mapping", json={"pricing_id": "abc"}).status_code == 200
+        assert client.get("/coins/ABC").json()["status"] == "pending_support"
+        assert client.delete("/coins/ABC/mapping").status_code == 204
         assert client.post("/rules", json={"name": "alert", "enabled": True, "source": "transfer", "level": "normal",
                                            "push": True, "conditions": {"min_usd": 200}}).status_code == 201
         for _ in range(2):

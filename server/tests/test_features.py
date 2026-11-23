@@ -8,8 +8,8 @@ from fastapi.testclient import TestClient
 
 from test_core import core, settings, transfer
 from tokenwatch.api import create_app
-from tokenwatch.coins import Candidate, CoinCatalog, CoinGeckoResolver, binance_candidates, public_json
-from tokenwatch.db import Account, CatalogMapping, Coin, CoinMapping, DailyBalance, now
+from tokenwatch.coins import public_json
+from tokenwatch.db import Account, Coin, DailyBalance, now
 from tokenwatch.upstream import AuthRequired, BadResponse, Blocked, RateLimited
 
 
@@ -90,70 +90,6 @@ def test_session_ttl(core):
     assert len(fake.calls) == 3
 
 
-def test_gecko_mapping_cache_and_ambiguity(core, settings):
-    store, fake, clock, gate, collectors = core
-    calls = []
-    payload = [{"id": "first", "symbol": "same", "platforms": {"ethereum": "0xABC"}},
-               {"id": "second", "symbol": "same", "platforms": {"base": "0xABC"}},
-               {"id": "unique", "symbol": "unique", "platforms": {}}]
-    def fetch(request):
-        calls.append(request)
-        return httpx.Response(200, json=payload)
-    resolver = CoinGeckoResolver(store, httpx.MockTransport(fetch), clock)
-    alpha = Candidate("SAME", [{"feed": "alpha", "chain_id": "1", "contract_address": "0xabc"}])
-    async def run():
-        assert await resolver.resolve(alpha) == "first"
-        assert await resolver.resolve(Candidate("SAME", [{"feed": "spot"}])) is None
-        with store() as db:
-            assert db.get(CatalogMapping, "SAME").ambiguous
-        assert await resolver.resolve(Candidate("UNIQUE", [{"feed": "spot"}])) == "unique"
-        other = CoinGeckoResolver(store, httpx.MockTransport(fetch), clock)
-        assert await other.resolve(alpha) == "first"
-        async def candidates():
-            return [alpha]
-        await CoinCatalog(store, gate, settings, resolver, candidates).refresh(SimpleNamespace(account_id="a"))
-        with store() as db:
-            assert not db.get(Coin, "SAME").verified
-        clock.value += 7 * 86400
-        await other.resolve(alpha)
-    asyncio.run(run())
-    assert len(calls) == 2
-    assert not fake.calls
-
-
-def test_manual_mapping_overrides_ambiguous_catalog(core, settings):
-    store, fake, clock, gate, collectors = core
-    with store.begin() as db:
-        db.add(CatalogMapping(symbol="ABC", pricing_id=None, ambiguous=True))
-        db.add(CoinMapping(coin_id="ABC", pricing_id="manual-id"))
-    class NoResolution:
-        async def resolve(self, candidate):
-            raise AssertionError("Manual overrides must bypass automatic resolution")
-    async def candidates():
-        return [Candidate("ABC", [{"feed": "spot"}])]
-    asyncio.run(CoinCatalog(store, gate, settings, NoResolution(), candidates).refresh(SimpleNamespace(account_id="a")))
-    with store() as db:
-        coin = db.get(Coin, "ABC")
-        assert coin.pricing_id == "manual-id"
-        assert not coin.verified
-        assert coin.exclusion_reason == "verification_disabled"
-    assert not fake.calls
-
-
-def test_ambiguous_symbol_not_checked(core, settings):
-    store, fake, clock, gate, collectors = core
-    payload = [{"id": name, "symbol": "same", "platforms": {}} for name in ("one", "two")]
-    resolver = CoinGeckoResolver(store, httpx.MockTransport(lambda request: httpx.Response(200, json=payload)), clock)
-    async def candidates():
-        return [Candidate("SAME", [{"feed": "spot"}])]
-    asyncio.run(CoinCatalog(store, gate, settings.model_copy(update={"allow_pricing_id_checks": True}),
-                            resolver, candidates).refresh(SimpleNamespace(account_id="a")))
-    with store() as db:
-        assert db.get(Coin, "SAME").exclusion_reason == "ambiguous_symbol"
-        assert not db.get(Coin, "SAME").verified
-    assert not fake.calls
-
-
 def test_entity_selection_api(settings):
     app = create_app(settings, run_scheduler=False)
     with TestClient(app) as client:
@@ -187,8 +123,6 @@ def test_public_request_bounded_backoff_and_validation():
     asyncio.run(run())
     assert len(calls) == 3
     assert delays == [30, 60]
-    with pytest.raises(ValueError):
-        asyncio.run(binance_candidates(httpx.MockTransport(lambda request: httpx.Response(200, json={}))))
 
 
 def test_api_session_reads_share_cache(settings):

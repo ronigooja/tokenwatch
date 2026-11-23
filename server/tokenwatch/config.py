@@ -21,7 +21,6 @@ class Settings(BaseModel):
     transfer_max_interval: float = Field(default=1800, gt=0)
     transfer_retention_days: int = Field(default=30, gt=0)
     snapshot_retention_days: int = Field(default=30, gt=0)
-    allow_pricing_id_checks: bool = False
     account_status_ttl: float = Field(default=600, gt=0)
     novnc_url: str = ""
     vnc_password: SecretStr | None = None
