@@ -162,6 +162,25 @@ def search(*tokens):
     return {"bestMatches": [], "tokens": list(tokens)}
 
 
+def test_search_matches_realistic_responses():
+    from tokenwatch.coins import search_matches
+    contract = address(42)
+    payload = {"bestMatches": [], "arkhamEntities": [{"name": "ignored"}], "tokens": [
+        {"identifier": {"pricingID": "uniswap"}, "name": "Uniswap", "symbol": "UNI",
+         "price": None, "price24hAgo": None, "deployments": [
+             {"chain": "ethereum", "address": contract}, {"chain": "base", "address": contract}]},
+        {"identifier": {"pricingID": "other", "chain": "ethereum", "address": contract},
+         "name": "Other", "symbol": "OTH", "deployments": []},
+        {"identifier": None, "deployments": [{"chain": "base", "address": contract}]},
+        {"identifier": {"pricingID": "broken"}, "deployments": [{"chain": None, "address": contract}, {}]},
+    ]}
+    assert search_matches(payload, contract) == {"uniswap": {"ethereum", "base"}, "other": {"ethereum"}}
+    assert search_matches({"bestMatches": [{}], "tokens": [payload["tokens"][1]]}, contract) == {
+        "other": {"ethereum"}}
+    with pytest.raises(BadResponse):
+        search_matches({"bestMatches": []}, contract)
+
+
 def pending(db, id, chain, contract):
     db.add(Coin(id=id, symbol="SAME", sources=["alpha"], deployments=[{"feed": "alpha", "chain": chain, "address": contract,
                                                                     "deposit_enabled": None, "withdraw_enabled": None}],

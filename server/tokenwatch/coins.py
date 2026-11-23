@@ -181,25 +181,25 @@ def classify(candidate, snapshot, futures_symbols, policies):
 
 
 def search_matches(payload, address):
-    try:
-        field(payload, "bestMatches", list, empty=True)
-        tokens = field(payload, "tokens", list, empty=True)
-        matches = defaultdict(set)
-        for token in tokens:
-            identifier = field(token, "identifier", dict)
-            pricing_id = field(identifier, "pricingID", str)
-            if not PRICING_ID.fullmatch(pricing_id) or ".." in pricing_id:
-                raise ValueError("invalid pricing ID")
-            deployments = field(token, "deployments", list, empty=True)
-            for deployment in [identifier, *deployments]:
-                if deployment is identifier and "address" not in identifier:
-                    continue
-                chain = field(deployment, "chain", str)
-                if normalize(field(deployment, "address", str)) == normalize(address):
-                    matches[pricing_id].add(chain)
-        return matches
-    except ValueError as exc:
-        raise BadResponse("invalid token search payload") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("tokens"), list):
+        raise BadResponse("invalid token search payload")
+    matches = defaultdict(set)
+    for token in payload["tokens"]:
+        identifier = token.get("identifier") if isinstance(token, dict) else None
+        if not isinstance(identifier, dict):
+            continue
+        pricing_id = identifier.get("pricingID")
+        if not isinstance(pricing_id, str) or not PRICING_ID.fullmatch(pricing_id) or ".." in pricing_id:
+            continue
+        deployments = token.get("deployments")
+        deployments = deployments if isinstance(deployments, list) else []
+        for deployment in [identifier, *deployments]:
+            if not isinstance(deployment, dict):
+                continue
+            chain, contract = deployment.get("chain"), deployment.get("address")
+            if isinstance(chain, str) and chain and isinstance(contract, str) and contract and normalize(contract) == normalize(address):
+                matches[pricing_id].add(chain)
+    return matches
 
 
 def support_status(payload):
