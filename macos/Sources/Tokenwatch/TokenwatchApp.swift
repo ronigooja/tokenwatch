@@ -1,46 +1,33 @@
 import AppKit
-import Security
 import SwiftUI
 import TokenwatchCore
 import UserNotifications
 
-private enum Keychain {
-    private static var query: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: "app.tokenwatch.macos",
-         kSecAttrAccount as String: "server-bearer"]
+private enum TokenStore {
+    private static var directory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Tokenwatch", isDirectory: true)
     }
 
+    private static var file: URL { directory.appendingPathComponent("server-token") }
+
     static func load() throws -> String? {
-        var request = query
-        request[kSecReturnData as String] = true
-        var value: CFTypeRef?
-        let status = SecItemCopyMatching(request as CFDictionary, &value)
-        if status == errSecItemNotFound { return nil }
-        try check(status)
-        guard let data = value as? Data, let token = String(data: data, encoding: .utf8) else {
-            throw APIError.invalidToken
-        }
+        guard FileManager.default.fileExists(atPath: file.path) else { return nil }
+        let text = String(data: try Data(contentsOf: file), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let token = text, !token.isEmpty else { throw APIError.invalidToken }
         return token
     }
 
     static func store(_ token: String) throws {
-        let value: [String: Any] = [kSecValueData as String: Data(token.utf8)]
-        let status = SecItemUpdate(query as CFDictionary, value as CFDictionary)
-        if status == errSecItemNotFound {
-            try check(SecItemAdd(query.merging(value) { _, new in new } as CFDictionary, nil))
-        } else {
-            try check(status)
-        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        try Data(token.utf8).write(to: file, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
 
     static func remove() throws {
-        let status = SecItemDelete(query as CFDictionary)
-        if status != errSecItemNotFound { try check(status) }
-    }
-
-    private static func check(_ status: OSStatus) throws {
-        guard status == errSecSuccess else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
     }
 }
 
@@ -96,24 +83,24 @@ final class AppModel: ObservableObject {
         UNUserNotificationCenter.current().delegate = presenter
         guard !serverAddress.isEmpty else { return }
         do {
-            if let token = try Keychain.load() { connect(try makeClient(address: serverAddress, token: token)) }
+            if let token = try TokenStore.load() { connect(try makeClient(address: serverAddress, token: token)) }
         } catch { problem = error.localizedDescription }
     }
 
     func save(address: String, token: String) throws {
         let address = address.trimmingCharacters(in: .whitespacesAndNewlines)
         let effectiveToken: String
-        if token.isEmpty, address == serverAddress { effectiveToken = try Keychain.load() ?? "" }
+        if token.isEmpty, address == serverAddress { effectiveToken = try TokenStore.load() ?? "" }
         else { effectiveToken = token }
         let newClient = try makeClient(address: address, token: effectiveToken)
-        try Keychain.store(effectiveToken)
+        try TokenStore.store(effectiveToken)
         UserDefaults.standard.set(address, forKey: "serverAddress")
         serverAddress = address
         connect(newClient)
     }
 
     func forget() throws {
-        try Keychain.remove()
+        try TokenStore.remove()
         UserDefaults.standard.removeObject(forKey: "serverAddress")
         serverAddress = ""
         connect(nil)
@@ -394,7 +381,7 @@ private struct SettingsView: View {
             .disabled(action.busy)
             .navigationTitle("Settings")
             .onAppear { address = model.serverAddress }
-            .confirmationDialog("Remove the server and its Keychain token?", isPresented: $confirming) {
+            .confirmationDialog("Remove the server and its saved token?", isPresented: $confirming) {
                 Button("Forget Server", role: .destructive) {
                     action.run { try model.forget(); address = ""; token = "" }
                 }
