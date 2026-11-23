@@ -21,11 +21,28 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Account Id"
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/LoginInput"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "201": {
             "description": "Successful Response",
@@ -64,7 +81,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Account Id"
             }
           }
@@ -109,7 +126,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Account Id"
             }
           }
@@ -181,7 +198,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Resource Id"
             }
           }
@@ -224,7 +241,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Resource Id"
             }
           }
@@ -277,7 +294,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Resource Id"
             }
           }
@@ -342,7 +359,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Resource Id"
             }
           }
@@ -385,7 +402,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Resource Id"
             }
           }
@@ -438,7 +455,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Resource Id"
             }
           }
@@ -702,7 +719,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Resource Id"
             }
           }
@@ -745,7 +762,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Resource Id"
             }
           }
@@ -798,7 +815,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Resource Id"
             }
           }
@@ -1103,7 +1120,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Account Id"
             }
           }
@@ -1146,7 +1163,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Account Id"
             }
           }
@@ -1199,7 +1216,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Account Id"
             }
           }
@@ -1237,7 +1254,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Account Id"
             }
           }
@@ -1282,7 +1299,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Coin Id"
             }
           }
@@ -1325,7 +1342,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Coin Id"
             }
           }
@@ -1378,7 +1395,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Coin Id"
             }
           }
@@ -1418,7 +1435,7 @@
               "anyOf": [
                 {
                   "type": "string",
-                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"
                 },
                 {
                   "type": "null"
@@ -1689,7 +1706,7 @@
               "anyOf": [
                 {
                   "type": "string",
-                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"
                 },
                 {
                   "type": "null"
@@ -1886,7 +1903,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Coin Id"
             }
           },
@@ -1979,7 +1996,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
               "title": "Coin Id"
             }
           },
@@ -2229,67 +2246,86 @@
     "schemas": {
       "AccountCreate": {
         "properties": {
-          "id": {
+          "email": {
             "type": "string",
-            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$",
-            "title": "Id"
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9._+-]*@[a-z0-9-]+(\\.[a-z0-9-]+)+$",
+            "title": "Email"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Password"
           },
           "proxy_url": {
             "type": "string",
             "title": "Proxy Url"
-          },
-          "timezone": {
-            "type": "string",
-            "title": "Timezone"
-          },
-          "persona": {
-            "type": "string",
-            "enum": [
-              "none",
-              "windows"
-            ],
-            "title": "Persona",
-            "default": "windows"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "id",
-          "proxy_url",
-          "timezone"
+          "email",
+          "password",
+          "proxy_url"
         ],
         "title": "AccountCreate"
       },
       "AccountInput": {
         "properties": {
-          "proxy_ref": {
-            "type": "string",
-            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
-            "title": "Proxy Ref"
-          },
           "status": {
-            "type": "string",
-            "enum": [
-              "active",
-              "paused"
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "paused"
+                ]
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Status",
-            "default": "active"
+            "title": "Status"
+          },
+          "proxy_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proxy Url"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
           }
         },
         "additionalProperties": false,
         "type": "object",
-        "required": [
-          "proxy_ref"
-        ],
         "title": "AccountInput"
       },
       "AccountOut": {
         "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
           "proxy_ref": {
             "type": "string",
-            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
             "title": "Proxy Ref"
           },
           "status": {
@@ -2298,12 +2334,7 @@
               "active",
               "paused"
             ],
-            "title": "Status",
-            "default": "active"
-          },
-          "id": {
-            "type": "string",
-            "title": "Id"
+            "title": "Status"
           },
           "pause_reason": {
             "anyOf": [
@@ -2350,13 +2381,47 @@
               }
             ],
             "title": "Persona"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          },
+          "proxy_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proxy Url"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "proxy_ref",
           "id",
+          "proxy_ref",
+          "status",
           "pause_reason",
           "available_at",
           "failures"
@@ -2510,14 +2575,14 @@
         "properties": {
           "symbol": {
             "type": "string",
-            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
             "title": "Symbol"
           },
           "pricing_id": {
             "anyOf": [
               {
                 "type": "string",
-                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"
               },
               {
                 "type": "null"
@@ -2542,14 +2607,14 @@
         "properties": {
           "symbol": {
             "type": "string",
-            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
             "title": "Symbol"
           },
           "pricing_id": {
             "anyOf": [
               {
                 "type": "string",
-                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"
               },
               {
                 "type": "null"
@@ -2805,14 +2870,14 @@
           },
           "account_id": {
             "type": "string",
-            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
             "title": "Account Id"
           },
           "coin_id": {
             "anyOf": [
               {
                 "type": "string",
-                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"
               },
               {
                 "type": "null"
@@ -2875,14 +2940,14 @@
           },
           "account_id": {
             "type": "string",
-            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
             "title": "Account Id"
           },
           "coin_id": {
             "anyOf": [
               {
                 "type": "string",
-                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"
               },
               {
                 "type": "null"
@@ -2923,6 +2988,22 @@
         ],
         "title": "JobOut"
       },
+      "LoginInput": {
+        "properties": {
+          "page": {
+            "type": "string",
+            "enum": [
+              "login",
+              "register"
+            ],
+            "title": "Page",
+            "default": "login"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "LoginInput"
+      },
       "LoginSession": {
         "properties": {
           "state": {
@@ -2960,7 +3041,7 @@
         "properties": {
           "pricing_id": {
             "type": "string",
-            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
             "title": "Pricing Id"
           }
         },
@@ -2992,7 +3073,7 @@
               {
                 "items": {
                   "type": "string",
-                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"
                 },
                 "type": "array"
               },
@@ -3007,7 +3088,7 @@
               {
                 "items": {
                   "type": "string",
-                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"
                 },
                 "type": "array"
               },
@@ -3355,7 +3436,7 @@
         "properties": {
           "account_id": {
             "type": "string",
-            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
             "title": "Account Id"
           },
           "interval": {
@@ -3385,7 +3466,7 @@
               {
                 "items": {
                   "type": "string",
-                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"
                 },
                 "type": "array",
                 "maxItems": 50,

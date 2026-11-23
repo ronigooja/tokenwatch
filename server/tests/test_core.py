@@ -295,7 +295,7 @@ def test_api_crud_snapshots_filters_and_socket(settings):
         client.headers.update(headers)
         with app.state.store.begin() as db:
             db.add(Account(id="a", proxy_ref="p", status="active"))
-        assert client.put("/accounts/a", json={"proxy_ref": "p"}).status_code == 200
+        assert client.put("/accounts/a", json={"status": "active"}).status_code == 200
         assert client.get("/accounts/a/session").json() == {"status": "logged_in"}
         assert client.put("/coins/ABC", json={"symbol": "ABC", "pricing_id": "abc", "verified": True}).status_code == 200
         assert client.put("/subscriptions/ABC", json={"enabled": True}).status_code == 200

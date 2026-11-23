@@ -59,9 +59,13 @@ class FakeSession:
         self.titles = deque(["Arkham"])
         self.fetches = []
         self.error = None
+        self.pages = []
 
     async def open_site(self):
         self.opened = True
+
+    async def login_page(self, page, email, password, timeout):
+        self.pages.append((page, email, password, timeout))
 
     async def title(self):
         if len(self.titles) > 1:
@@ -160,6 +164,30 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
                                    (Response(200, 'not json'), "unknown")):
             session.response = response
             self.assertEqual(await client.account_status("one"), expected)
+
+    async def test_replace_account_closes_instance(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as directory:
+            session = FakeSession()
+            client, _, forwarder = self.client(session, accounts_file=Path(directory) / "accounts.toml",
+                                                managed_ids=frozenset({"one"}))
+            await client.get_json("one", "/user")
+            updated = replace(CONFIG.accounts[0], password="secret")
+            await client.replace_account(updated)
+            self.assertTrue(session.closed.is_set())
+            self.assertFalse(forwarder.started[0].alive)
+            self.assertEqual(client.account_config("one"), (updated, True))
+
+    async def test_manual_login_routes_credentials(self):
+        session = FakeSession()
+        account = replace(CONFIG.accounts[0], email="user@example.com", password="private")
+        client, _, _ = self.client(session, accounts=(account, CONFIG.accounts[1]))
+        task = asyncio.create_task(client.manual_login("one", page="register"))
+        while not session.pages:
+            await asyncio.sleep(0)
+        self.assertEqual(session.pages, [("register", "user@example.com", "private", 60)])
+        session.closed.set()
+        await task
 
     def client(self, *sessions, **options):
         launcher, forwarder = FakeLauncher(*sessions), FakeForwarder()

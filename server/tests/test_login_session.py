@@ -23,7 +23,8 @@ class Upstream:
         self.end = None
         self.response = {"id": "user"}
 
-    async def manual_login(self, account_id, *, ready):
+    async def manual_login(self, account_id, *, ready, page="login"):
+        self.page = page
         if self.mode == "fail":
             raise RuntimeError("launch failed")
         self.end = asyncio.Event()
@@ -88,6 +89,7 @@ def test_start_finish_ticket_and_single_probe(setup, caplog):
     path = result.json()["path"]
     assert "password=secret+password" in path
     wait_state(client, "open")
+    assert fake.page == "login"
     assert client.post("/accounts/b/login").status_code == 409
     with app.state.store() as db:
         assert (db.get(Account, "a").status, db.get(Account, "a").pause_reason) == ("paused", "login")
@@ -103,6 +105,14 @@ def test_start_finish_ticket_and_single_probe(setup, caplog):
     assert client.post("/accounts/a/login/finish").status_code == 404
     assert "secret password" not in caplog.text
     assert asset.split("/")[2] not in caplog.text
+
+
+def test_register_page(setup):
+    client, _, fake = setup
+    assert client.post("/accounts/a/login", json={"page": "invalid"}).status_code == 422
+    assert client.post("/accounts/a/login", json={"page": "register"}).status_code == 201
+    wait_state(client, "open")
+    assert fake.page == "register"
 
 
 def test_failed_timeout_closed_and_auth_pause(setup):

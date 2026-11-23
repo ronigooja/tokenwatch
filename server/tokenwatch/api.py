@@ -2,9 +2,10 @@ import asyncio
 import secrets
 from contextlib import asynccontextmanager, suppress
 from datetime import date, datetime, timedelta, timezone
+from dataclasses import replace
 from importlib import import_module
 from typing import Annotated
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket
 from fastapi.responses import JSONResponse
@@ -26,6 +27,7 @@ from .db import (Account, Coin, CoinMapping, DailyBalance, DailyCollection, Even
 from .scheduler import AccountUnavailable, RequestGate, Scheduler
 from .upstream import UpstreamError
 from .browser.config import AccountConfig, proxy_parts
+from .browser.timezone import detect_timezone
 
 
 Page = Annotated[int, Query(ge=1, le=500)]
@@ -135,8 +137,6 @@ def validate_coin(db, current, values):
 
 
 def validate_account(db, current, values):
-    if current.proxy_ref is not None and values["proxy_ref"] != current.proxy_ref:
-        raise HTTPException(409, "Proxy binding cannot be changed for an existing account")
     if values["status"] == "active":
         values["pause_reason"] = None
     elif current.status != "paused":
@@ -168,7 +168,8 @@ def remove_coin(db, current):
         db.delete(mapping)
 
 
-def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, run_scheduler=True):
+def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, run_scheduler=True,
+               timezone_detector=detect_timezone):
     @asynccontextmanager
     async def lifespan(app):
         config = settings or load_settings()
@@ -181,6 +182,7 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
         store = open_store(config.database)
         app.state.settings, app.state.store, app.state.upstream = config, store, client
         app.state.accounts_lock = asyncio.Lock()
+        app.state.timezone_detector = timezone_detector
         app.state.collectors = None
         app.state.gate = None
         task = None
@@ -212,8 +214,8 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
     novnc.install(app)
 
     @app.post("/accounts/{account_id}/login", response_model=s.LoginSession, status_code=201, dependencies=auth)
-    async def start_login(account_id: s.Ref, request: Request):
-        return await request.app.state.logins.start(account_id)
+    async def start_login(account_id: s.Ref, request: Request, body: s.LoginInput | None = None):
+        return await request.app.state.logins.start(account_id, page=body.page if body else "login")
 
     @app.get("/accounts/{account_id}/login", response_model=s.LoginSession, dependencies=auth)
     async def get_login(account_id: s.Ref, request: Request, db: DB):
@@ -230,7 +232,8 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, error):
-        if request.url.path == "/accounts" and request.method == "POST":
+        if (request.url.path == "/accounts" and request.method == "POST" or
+                request.url.path.startswith("/accounts/") and request.method == "PUT"):
             return JSONResponse(status_code=422, content={"detail": "Invalid account input"})
         from fastapi.encoders import jsonable_encoder
         return JSONResponse(status_code=422, content={"detail": jsonable_encoder(error.errors())})
@@ -247,7 +250,17 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
         getter = getattr(client, "account_config", None)
         config, managed = getter(row.id) if getter else (None, False)
         return {**s.AccountOut.model_validate(row).model_dump(), "managed": managed,
-                "timezone": config.timezone if config else None, "persona": config.persona if config else None}
+                "timezone": config.timezone if config else None, "persona": config.persona if config else None,
+                "email": config.email if managed else None, "password": config.password if managed else None,
+                "proxy_url": config.proxy_url if managed else None}
+
+    async def timezone_for(account):
+        try:
+            zone = await app.state.timezone_detector(account)
+            ZoneInfo(zone)
+            return zone
+        except Exception:
+            raise HTTPException(502, "Cannot determine proxy timezone") from None
 
     @app.get("/accounts", response_model=list[s.AccountOut], dependencies=auth, operation_id="list_accounts")
     def list_accounts(db: DB, request: Request):
@@ -264,21 +277,22 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
             raise HTTPException(503, "Browser pool unavailable")
         try:
             proxy_parts(body.proxy_url)
-            ZoneInfo(body.timezone)
-        except (ValueError, ZoneInfoNotFoundError):
+        except ValueError:
             raise HTTPException(422, "Invalid account input") from None
         async with request.app.state.accounts_lock:
             with request.app.state.store.begin() as db:
                 rows = db.scalars(select(Account)).all()
-                proxy_ref = f"proxy-{body.id}"
-                if any(row.id.casefold() == body.id.casefold() or row.proxy_ref == proxy_ref for row in rows):
+                proxy_ref = f"proxy-{body.email}"
+                if any(row.id.casefold() == body.email.casefold() or row.proxy_ref == proxy_ref for row in rows):
                     raise HTTPException(409, "Account conflicts with existing data")
                 used = {a.fingerprint_seed for a in getattr(client, "_accounts", {}).values()}
                 seed = secrets.randbits(32)
                 while seed in used:
                     seed = secrets.randbits(32)
-                account = AccountConfig(body.id, body.proxy_url, seed, body.timezone, body.persona)
-                row = Account(id=body.id, proxy_ref=proxy_ref, status="active")
+                account = AccountConfig(body.email, body.proxy_url, seed, persona="windows",
+                                        email=body.email, password=body.password)
+                account = replace(account, timezone=await timezone_for(account))
+                row = Account(id=body.email, proxy_ref=proxy_ref, status="active")
                 db.add(row)
                 db.flush()
                 try:
@@ -290,14 +304,38 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
                 return account_out(row, client)
 
     @app.put("/accounts/{account_id}", response_model=s.AccountOut, dependencies=auth, operation_id="put_accounts")
-    def put_account(account_id: s.Ref, body: s.AccountInput, db: DB, request: Request):
-        row = find(db, Account, account_id)
-        values = body.model_dump()
-        validate_account(db, row, values)
-        for key, value in values.items():
-            setattr(row, key, value)
-        db.flush()
-        return account_out(row, request.app.state.upstream)
+    async def put_account(account_id: s.Ref, body: s.AccountInput, request: Request):
+        client = request.app.state.upstream
+        async with request.app.state.accounts_lock:
+            with request.app.state.store.begin() as db:
+                row = find(db, Account, account_id)
+                values = body.model_dump(exclude_unset=True)
+                if any(value is None for value in values.values()):
+                    raise HTTPException(422, "Invalid account input")
+                getter = getattr(client, "account_config", None)
+                config, managed = getter(account_id) if getter else (None, False)
+                if {"proxy_url", "password"} & values.keys():
+                    if not managed:
+                        raise HTTPException(409, "Account is not managed")
+                    proxy = values.get("proxy_url", config.proxy_url)
+                    try:
+                        proxy_parts(proxy)
+                    except ValueError:
+                        raise HTTPException(422, "Invalid account input") from None
+                    updated = replace(config, proxy_url=proxy, password=values.get("password", config.password))
+                    if proxy != config.proxy_url:
+                        updated = replace(updated, timezone=await timezone_for(updated))
+                    try:
+                        await client.replace_account(updated)
+                    except (OSError, UpstreamError):
+                        raise HTTPException(503, "Browser pool unavailable") from None
+                if "status" in values:
+                    status_values = {"status": values["status"]}
+                    validate_account(db, row, status_values)
+                    for key, value in status_values.items():
+                        setattr(row, key, value)
+                db.flush()
+                return account_out(row, client)
 
     @app.delete("/accounts/{account_id}", status_code=204, dependencies=auth, operation_id="delete_accounts")
     async def delete_account(account_id: s.Ref, request: Request):

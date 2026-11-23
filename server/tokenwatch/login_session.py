@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 from fastapi import HTTPException
 
 from .db import Account
+from .display import clear_caps_lock
 
 
 @dataclass
@@ -14,6 +15,7 @@ class Login:
     account_id: str
     ticket: str
     previous: tuple[str, str | None]
+    page: str = "login"
     state: str = "starting"
     task: asyncio.Task | None = None
     timer: asyncio.Task | None = None
@@ -42,7 +44,7 @@ class LoginSessions:
         return {"state": session.state, "path": self.path(session)} if session else {
             "state": self.history.get(account_id, "none"), "path": None}
 
-    async def start(self, account_id):
+    async def start(self, account_id, *, page="login"):
         async with self.lock:
             with self.store.begin() as db:
                 account = db.get(Account, account_id)
@@ -52,10 +54,11 @@ class LoginSessions:
                     raise HTTPException(409, "Login session already exists")
                 if not self.settings.novnc_url or not callable(getattr(self.upstream, "manual_login", None)):
                     raise HTTPException(503, "Login unavailable")
-                session = Login(account_id, secrets.token_urlsafe(32), (account.status, account.pause_reason))
+                session = Login(account_id, secrets.token_urlsafe(32), (account.status, account.pause_reason), page)
                 account.status, account.pause_reason = "paused", "login"
             self.current = session
             self.history.pop(account_id, None)
+            await asyncio.to_thread(clear_caps_lock)
             session.task = asyncio.create_task(self._run(session))
             session.timer = asyncio.create_task(self._timeout(session))
             return {"state": "starting", "path": self.path(session)}
@@ -65,7 +68,7 @@ class LoginSessions:
             session.state = "open"
 
         try:
-            await self.upstream.manual_login(session.account_id, ready=ready)
+            await self.upstream.manual_login(session.account_id, ready=ready, page=session.page)
         except asyncio.CancelledError:
             raise
         except Exception:

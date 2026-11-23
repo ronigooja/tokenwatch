@@ -30,3 +30,7 @@ Base URL: `https://api.arkm.com`. No official API key is used; requests run from
 `id`, `transactionHash`, `fromAddress`, `toAddress` (each with `address`, `chain`, optional `arkhamEntity` and `arkhamLabel`), `tokenAddress`, `tokenSymbol`, `unitValue`, `blockTimestamp`, `blockNumber`.
 
 The server reads USD values from `historicalUSD` or `usdValue` if supplied; otherwise the USD value is unknown.
+
+## Interactive authentication pages
+
+Login: `https://arkm.com/login?redirectDomain=https://arkm.com`. Registration: `https://arkm.com/register?redirectDomain=https://arkm.com`. The registration page has `input#email[name=email][type=email]`, `input#password[name=password][type=password]`, and a “Sign Up” button. The login page DOM is not verified because a Cloudflare challenge can appear first. The browser uses `input[type=email], input[name=email]` and `input[type=password]` to fill saved credentials when visible; it never submits the form.

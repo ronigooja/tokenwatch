@@ -109,3 +109,48 @@ class ForwarderTests(unittest.IsolatedAsyncioTestCase):
         listener.start_server.assert_awaited_once_with({"rserver": [upstream]})
         with self.assertRaises(ConnectionError):
             await server.DIRECT.open_connection("example.invalid", 443)
+
+
+def test_login_page_autofill_and_timeout():
+    import asyncio
+    from tokenwatch.browser.transport import _PlaywrightSession, REGISTER_URL
+
+    class Field:
+        def __init__(self, visible=True):
+            self.visible = visible
+            self.filled = []
+            self.first = self
+        async def wait_for(self, **kwargs):
+            if not self.visible:
+                await asyncio.Event().wait()
+        async def fill(self, value, **kwargs):
+            self.filled.append(value)
+
+    class Page:
+        def __init__(self, visible=True):
+            self.email, self.password = Field(visible), Field(visible)
+            self.url = None
+        def on(self, *args):
+            pass
+        async def goto(self, url, **kwargs):
+            self.url = url
+        def locator(self, selector):
+            return self.email if "email" in selector else self.password
+
+    class Context:
+        def on(self, *args):
+            pass
+
+    async def run():
+        page = Page()
+        session = _PlaywrightSession(None, Context(), page)
+        await session.login_page("register", "secret-email", "secret-password", 0.01)
+        assert page.url == REGISTER_URL
+        assert page.email.filled == ["secret-email"] and page.password.filled == ["secret-password"]
+        page = Page(False)
+        session = _PlaywrightSession(None, Context(), page)
+        await session.login_page("login", "secret-email", "secret-password", 0.001)
+        assert not page.email.filled and not page.password.filled
+        await session.login_page("login", None, None, 0.001)
+        assert not page.email.filled
+    asyncio.run(run())

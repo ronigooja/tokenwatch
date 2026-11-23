@@ -10,6 +10,8 @@ from typing import Protocol
 from .config import AccountConfig, proxy_parts
 
 SITE_URL = "https://arkm.com/"
+LOGIN_URL = "https://arkm.com/login?redirectDomain=https://arkm.com"
+REGISTER_URL = "https://arkm.com/register?redirectDomain=https://arkm.com"
 API_ORIGIN = "https://api.arkm.com"
 
 
@@ -23,6 +25,7 @@ class Response:
 
 class BrowserSession(Protocol):
     async def open_site(self) -> None: ...
+    async def login_page(self, page: str, email: str | None, password: str | None, timeout: float) -> None: ...
     async def title(self) -> str: ...
     async def account_status(self) -> str: ...
     async def fetch(self, url: str, headers: dict[str, str]) -> Response: ...
@@ -60,6 +63,22 @@ class _PlaywrightSession:
 
     async def open_site(self) -> None:
         await self._page.goto(SITE_URL, wait_until="domcontentloaded")
+
+    async def login_page(self, page: str, email: str | None, password: str | None, timeout: float) -> None:
+        try:
+            await self._page.goto(LOGIN_URL if page == "login" else REGISTER_URL, wait_until="domcontentloaded")
+            if email is None or password is None:
+                return
+            async with asyncio.timeout(timeout):
+                email_field = self._page.locator("input[type=email], input[name=email]").first
+                password_field = self._page.locator("input[type=password]").first
+                await email_field.wait_for(state="visible", timeout=0)
+                await password_field.wait_for(state="visible", timeout=0)
+                await email_field.fill(email, timeout=0)
+                await password_field.fill(password, timeout=0)
+        except Exception:
+            # Browser errors can contain field values; never propagate them.
+            return
 
     async def title(self) -> str:
         return await self._page.title()

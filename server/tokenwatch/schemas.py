@@ -1,10 +1,16 @@
 from datetime import date, datetime, timezone
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-Ref = Annotated[str, Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")]
+def safe_ref(value: str) -> str:
+    if ".." in value:
+        raise ValueError("Invalid reference")
+    return value
+
+
+Ref = Annotated[str, Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"), AfterValidator(safe_ref)]
 NonNegative = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 Positive = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 Interval = Literal["7d", "14d", "30d"]
@@ -50,25 +56,40 @@ class SubscriptionOut(SubscriptionInput):
 
 
 class AccountInput(Schema):
-    proxy_ref: Ref
-    status: Literal["active", "paused"] = "active"
+    status: Literal["active", "paused"] | None = None
+    proxy_url: str | None = None
+    password: Annotated[str, Field(min_length=1, max_length=256)] | None = None
 
 
 class AccountCreate(Schema):
-    id: Annotated[str, Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$")]
+    email: Annotated[str, Field(max_length=128, pattern=r"^[a-z0-9][a-z0-9._+-]*@[a-z0-9-]+(\.[a-z0-9-]+)+$")]
+    password: Annotated[str, Field(min_length=1, max_length=256)]
     proxy_url: str
-    timezone: str
-    persona: Literal["none", "windows"] = "windows"
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value):
+        return value.strip().lower() if isinstance(value, str) else value
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value):
+        return safe_ref(value)
 
 
-class AccountOut(AccountInput):
+class AccountOut(Schema):
     id: str
+    proxy_ref: str
+    status: Literal["active", "paused"]
     pause_reason: str | None
     available_at: float
     failures: int
     managed: bool = False
     timezone: str | None = None
     persona: str | None = None
+    email: str | None = None
+    password: str | None = None
+    proxy_url: str | None = None
 
 
 class AccountSession(Schema):
@@ -78,6 +99,10 @@ class AccountSession(Schema):
 class LoginSession(Schema):
     state: Literal["none", "starting", "open", "closed", "failed"]
     path: str | None
+
+
+class LoginInput(Schema):
+    page: Literal["login", "register"] = "login"
 
 
 class ExclusionInput(Schema):

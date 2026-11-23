@@ -200,7 +200,7 @@ def test_api_session_reads_share_cache(settings):
         client.headers.update({"Authorization": "Bearer test-token"})
         with app.state.store.begin() as db:
             db.add(Account(id="a", proxy_ref="p", status="active"))
-        client.put("/accounts/a", json={"proxy_ref": "p"})
+        client.put("/accounts/a", json={"status": "active"})
         for _ in range(3):
             assert client.get("/accounts/a/session").json() == {"status": "logged_in"}
     assert len(fake.calls) == 1

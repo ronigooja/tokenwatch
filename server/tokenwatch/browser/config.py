@@ -39,6 +39,8 @@ class AccountConfig:
     timezone: str = "America/New_York"
     persona: str = "none"
     disable_spoofing: tuple[str, ...] = ("canvas",)
+    email: str | None = None
+    password: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.persona not in ("none", "windows"):
@@ -48,7 +50,7 @@ class AccountConfig:
             self.disable_spoofing
         ):
             raise ValueError("Invalid browser disable_spoofing")
-        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]*", self.id):
+        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}", self.id) or ".." in self.id:
             raise ValueError("Invalid browser account ID")
         if type(self.fingerprint_seed) is not int or self.fingerprint_seed < 0:
             raise ValueError("Invalid browser fingerprint seed")
@@ -108,8 +110,10 @@ def write_accounts(path: Path, accounts: list[AccountConfig]) -> None:
     lines = []
     for account in accounts:
         lines.append("[[accounts]]")
-        for key in ("id", "proxy_url", "fingerprint_seed", "timezone", "persona", "disable_spoofing"):
+        for key in ("id", "proxy_url", "fingerprint_seed", "timezone", "persona", "disable_spoofing", "email", "password"):
             value = getattr(account, key)
+            if value is None:
+                continue
             lines.append(f"{key} = {json.dumps(value, ensure_ascii=True)}")
         lines.append("")
     name = None

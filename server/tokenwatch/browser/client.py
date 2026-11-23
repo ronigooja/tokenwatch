@@ -100,12 +100,13 @@ class _Instance:
 class BrowserUpstreamClient:
     def __init__(
         self, config: BrowserConfig, *, launcher: Launcher | None = None,
-        forwarder: Forwarder | None = None, clock: Callable[[], float] = time.time,
+        forwarder: Forwarder | None = None, clock: Callable[[], float] = time.time, autofill_timeout: float = 60,
     ) -> None:
         self._config = config
         self._launcher = launcher if launcher is not None else PlaywrightLauncher()
         self._forwarder = forwarder if forwarder is not None else PProxyForwarder()
         self._clock = clock
+        self._autofill_timeout = autofill_timeout
         self._accounts = {account.id: account for account in config.accounts}
         self._managed_ids = set(config.managed_ids)
         self._locks = {account_id: asyncio.Lock() for account_id in self._accounts}
@@ -149,10 +150,13 @@ class BrowserUpstreamClient:
         except Exception:
             return "unknown"
 
-    async def manual_login(self, account_id: str, *, ready: Callable[[], None] | None = None) -> None:
+    async def manual_login(self, account_id: str, *, ready: Callable[[], None] | None = None, page: str = "login") -> None:
         async with self._lease(account_id, interactive=True) as instance:
             if ready:
                 ready()
+            account = self._accounts[account_id]
+            await _through(instance.forward, lambda: instance.session.login_page(
+                page, account.email, account.password, self._autofill_timeout))
             await _through(instance.forward, instance.session.wait_closed)
 
     def account_config(self, account_id: str):
@@ -183,6 +187,18 @@ class BrowserUpstreamClient:
             del self._locks[account_id]
             self._managed_ids.remove(account_id)
             self._failed_proxies.discard(account_id)
+            self._changed.notify_all()
+
+    async def replace_account(self, account: AccountConfig) -> None:
+        async with self._locks[account.id], self._changed:
+            if self._closed or account.id not in self._managed_ids or self._config.accounts_file is None:
+                raise BadResponse("Browser pool unavailable")
+            write_accounts(self._config.accounts_file, [account if key == account.id else self._accounts[key]
+                                                        for key in sorted(self._managed_ids)])
+            if instance := self._instances.get(account.id):
+                await self._drop(account.id, instance)
+            self._accounts[account.id] = account
+            self._failed_proxies.discard(account.id)
             self._changed.notify_all()
 
     async def _start(self, account: AccountConfig, interactive: bool) -> _Instance:
