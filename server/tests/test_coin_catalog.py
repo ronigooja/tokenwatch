@@ -65,6 +65,52 @@ def mock_feeds(feeds, calls):
     return httpx.MockTransport(fetch)
 
 
+def test_optional_network_fields_and_empty_tags():
+    from tokenwatch.coins import candidates, classify, parse_feeds
+    feeds = catalog_feeds()
+    rows = feeds[NETWORK_URL]["data"]
+    rows[-1]["networkList"] = [{"network": "BTC", "contractAddress": None, "depositEnable": True}]
+    rows[-2]["networkList"] = [{"network": "BTC", "contractAddress": None, "depositEnable": True}]
+    feeds[ASSET_URL]["data"][-1]["tags"] = [""]
+    snapshot = parse_feeds(*feeds.values())
+    coins = {row.symbol: row for row in candidates(snapshot)}
+    assert coins["BTC"].id == "native:BTC"
+    assert coins["BTC"].deployments[0]["withdraw_enabled"] is None
+    assert snapshot["assets"]["BTC"]["tags"] == []
+    assert coins["UNKNOWN"].id == "unknown:spot:UNKNOWN"
+    assert classify(coins["UNKNOWN"], snapshot, set(), [])[0] == "unknown_onchain"
+
+
+@pytest.mark.parametrize("bad", [{}, {"network": None, "contractAddress": "address"},
+                                {"network": "BTC", "contractAddress": 1, "depositEnable": True}])
+def test_malformed_network_is_retained_without_inventing_identity(bad):
+    from tokenwatch.coins import candidates, classify, parse_feeds
+    feeds = catalog_feeds()
+    feeds[NETWORK_URL]["data"][-1]["networkList"] = [bad]
+    snapshot = parse_feeds(*feeds.values())
+    coin = next(row for row in candidates(snapshot) if row.symbol == "BTC")
+    assert coin.id == "unknown:spot:BTC"
+    assert len(coin.deployments) == 1
+    assert classify(coin, snapshot, {"BTC"}, [])[0] == "unknown_onchain"
+
+
+@pytest.mark.parametrize("url,bad", [(SPOT_URL, {}), (NETWORK_URL, {"code": "000000"}),
+                                    (ASSET_URL, {"code": "error", "data": []})])
+def test_top_level_failure_preserves_snapshot(core, url, bad):
+    store, _, clock, gate, _ = core
+    feeds = catalog_feeds()
+    catalog = CoinCatalog(store, gate, mock_feeds(feeds, []), clock)
+    asyncio.run(catalog.refresh_snapshot())
+    with store() as db:
+        snapshot = copy.deepcopy(db.get(CatalogCache, "binance").payload)
+    feeds[url] = bad
+    clock.value += 1
+    asyncio.run(catalog.refresh_snapshot())
+    with store() as db:
+        cache = db.get(CatalogCache, "binance")
+        assert cache.payload == snapshot and cache.refreshed_at == 1000 and cache.error
+
+
 def test_catalog_rules_futures_identity_and_fallback(core):
     store, fake, clock, gate, _ = core
     calls, feeds = [], catalog_feeds()
