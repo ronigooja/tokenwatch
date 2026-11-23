@@ -195,6 +195,8 @@ public struct Account: Codable, Sendable, Identifiable {
     public let managed: Bool?
     public let timezone: String?
     public let persona: String?
+    public let sessionStatus: AccountSession.Status?
+    public let sessionCheckedAt: Double?
 
     public var label: String { email ?? id }
 }
