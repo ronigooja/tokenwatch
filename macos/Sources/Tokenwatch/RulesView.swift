@@ -71,11 +71,12 @@ private struct RuleForm: View {
     @State private var cooldown = ""
     @State private var merge = ""
     @State private var action = ActionState()
+    @FocusState private var nameFocused: Bool
 
     var body: some View {
         Form {
             Section("Rule") {
-                TextField("Name", text: $name)
+                TextField("Name", text: $name).focused($nameFocused)
                 Toggle("Enabled", isOn: $enabled)
                 Picker("Source", selection: $source) {
                     Text("Choose…").tag(nil as RuleSource?)
@@ -116,6 +117,7 @@ private struct RuleForm: View {
             }
         }.formStyle(.grouped).frame(width: 490, height: 635)
             .disabled(action.busy).interactiveDismissDisabled(action.busy)
+            .defaultFocus($nameFocused, true)
             .onChange(of: source) { _, newSource in
                 if let direction, direction.isBalance != (newSource == .balanceDiff) { self.direction = nil }
             }

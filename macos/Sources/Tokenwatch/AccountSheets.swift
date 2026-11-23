@@ -18,6 +18,9 @@ struct AccountForm: View {
     @State private var password: String
     @State private var proxyURL: String
     @State private var action = ActionState()
+    @FocusState private var focus: Field?
+
+    private enum Field: Hashable { case email, password, proxy }
 
     init(client: APIClient, existing: Account? = nil, onSave: @escaping (Account, LoginPage?) -> Void) {
         self.client = client
@@ -31,14 +34,14 @@ struct AccountForm: View {
     var body: some View {
         Form {
             if existing == nil {
-                TextField("Email", text: $email)
+                TextField("Email", text: $email).focused($focus, equals: .email)
             } else {
                 LabeledContent("Email", value: email)
                 Text("The email is the account ID and cannot be changed. To use another email, delete the account and add it again.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            TextField("Password", text: $password)
-            TextField("Proxy", text: $proxyURL, prompt: Text("socks5h://user:pass@host:port"))
+            TextField("Password", text: $password).focused($focus, equals: .password)
+            TextField("Proxy", text: $proxyURL, prompt: Text("socks5h://user:pass@host:port")).focused($focus, equals: .proxy)
             ActionNotice(action: action)
             HStack {
                 Button("Cancel") { dismiss() }
@@ -50,6 +53,7 @@ struct AccountForm: View {
                 }
             }
         }.formStyle(.grouped).frame(width: 460).disabled(action.busy).interactiveDismissDisabled(action.busy)
+            .defaultFocus($focus, existing == nil ? .email : .proxy)
     }
 
     private func add(_ page: LoginPage) async throws {

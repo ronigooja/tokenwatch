@@ -353,10 +353,11 @@ private struct SettingsView: View {
     @State private var token = ""
     @State private var action = ActionState()
     @State private var confirming = false
+    @FocusState private var addressFocused: Bool
 
     var body: some View {
         Form {
-            TextField("Server URL", text: $address)
+            TextField("Server URL", text: $address).focused($addressFocused)
             SecureField("Bearer token", text: $token)
             Text("Use HTTPS for remote servers. Leave the token blank to reuse the saved token for the same URL.")
                 .foregroundStyle(.secondary)
@@ -379,6 +380,7 @@ private struct SettingsView: View {
             ActionNotice(action: action)
         }.formStyle(.grouped)
             .disabled(action.busy)
+            .defaultFocus($addressFocused, true)
             .navigationTitle("Settings")
             .onAppear { address = model.serverAddress }
             .confirmationDialog("Remove the server and its saved token?", isPresented: $confirming) {
