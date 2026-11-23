@@ -84,6 +84,8 @@ class AccountOut(Schema):
     pause_reason: str | None
     available_at: float
     failures: int
+    session_status: Literal["logged_in", "logged_out", "unknown"] | None = None
+    session_checked_at: float | None = None
     managed: bool = False
     timezone: str | None = None
     persona: str | None = None

@@ -25,7 +25,9 @@ Candidates are the union of trading Binance spot base assets and Binance Alpha s
 
 Automatic mappings and ambiguity are persisted separately from manual overrides, which take priority. CoinGecko IDs are tentative Arkham pricing IDs, not proof of upstream support. New mappings remain unverified unless manually verified or an opt-in, rate-limited Arkham balance check (`limit=1`) returns data. The database retains ineligible candidates with their reasons. The client can edit mappings and exclusions.
 
-Session status probes use signed `/user` requests through the account request gate. API reads share an in-memory TTL cache (`account_status_ttl`, default 600 seconds); successful scheduled requests and authentication failures also refresh it. A probe that fails for another reason returns `unknown`, is not cached, and does not count toward the account's failures or backoff; `Blocked`, `RateLimited` and `AuthRequired` during a probe pause the account like any other request.
+## Session status
+
+Session status probes use signed `/user` requests through the account request gate. `GET /accounts/{id}/session` uses an in-memory TTL cache (`account_status_ttl`, default 600 seconds); successful scheduled requests and authentication failures also refresh it. The cache is lost on service restart. A probe that fails for another reason returns `unknown`, is not cached, and does not count toward the account's failures or backoff; `Blocked`, `RateLimited` and `AuthRequired` during a probe pause the account like any other request.
 
 ## Login session
 
@@ -36,6 +38,8 @@ Before each interactive login, the server best-effort clears Caps Lock on its di
 ### Accounts
 
 Authenticated REST endpoints list, inspect, create, edit, pause/resume, and delete accounts. New managed accounts use the normalized login email as ID and the Windows persona; existing IDs remain valid. The private `accounts_file` (default `accounts.local.toml` beside the browser configuration) stores email, password, and proxy URL in plaintext, and authenticated responses return them for managed accounts. Static `[[accounts]]` cannot be edited except for status or deleted through the API. On creation and proxy changes, the server detects the timezone through that account’s proxy using `https://ipwho.is/`; detection failure leaves the account unchanged. Editing preserves the fingerprint seed and persona; `replace_account` atomically writes the managed file, drops the running instance under its account lock, and updates the pool. Account deletion requires that no job references it and preserves its profile directory. Interactive login leases do not consume the non-interactive instance limit and are not idle-evicted while active.
+
+Account responses expose the last cached [session status](#session-status) and its Unix timestamp, regardless of age, or null for both when absent; reading them makes no upstream request.
 
 - Each account is bound to one proxy; there is no direct-connection fallback. Why: avoid exposing the server IP and mixing identities.
 - Event rules, thresholds, and exclusions are data, not code. Why: they change without deployments.

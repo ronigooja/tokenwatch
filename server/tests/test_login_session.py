@@ -101,6 +101,10 @@ def test_start_finish_ticket_and_single_probe(setup, caplog):
     assert client.get("/login-view/wrong/vnc.html").status_code == 404
     assert client.post("/accounts/a/login/finish").json() == {"status": "logged_in"}
     assert fake.calls == [("a", "/user")]
+    rows = {row["id"]: row for row in client.get("/accounts").json()}
+    assert rows["a"]["session_status"] == "logged_in"
+    assert rows["a"]["session_checked_at"] == app.state.gate.status_cache["a"][0]
+    assert fake.calls == [("a", "/user")]
     assert client.get(asset).status_code == 404
     assert client.post("/accounts/a/login/finish").status_code == 404
     assert "secret password" not in caplog.text

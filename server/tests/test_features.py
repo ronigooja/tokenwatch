@@ -204,3 +204,39 @@ def test_api_session_reads_share_cache(settings):
         for _ in range(3):
             assert client.get("/accounts/a/session").json() == {"status": "logged_in"}
     assert len(fake.calls) == 1
+
+
+def test_account_responses_use_last_cached_status_without_probes(settings):
+    from test_core import Clock, FakeUpstream
+    fake, clock = FakeUpstream(), Clock()
+    fake.account_config = lambda account_id: (
+        SimpleNamespace(timezone="UTC", persona="windows", email="managed@example.com",
+                        password="secret", proxy_url="secret-proxy"), account_id == "managed"
+    )
+    fake.responses.extend([{"id": "user"}, AuthRequired(), BadResponse()])
+    app = create_app(settings, fake, run_scheduler=False)
+    with TestClient(app, headers={"Authorization": "Bearer test-token"}) as client:
+        app.state.gate.clock = clock
+        app.state.gate.sleep = clock.sleep
+        with app.state.store.begin() as db:
+            db.add_all([Account(id="managed", proxy_ref="p"), Account(id="static", proxy_ref="q"),
+                        Account(id="failed", proxy_ref="r")])
+        rows = {row["id"]: row for row in client.get("/accounts").json()}
+        assert all((row["session_status"], row["session_checked_at"]) == (None, None) for row in rows.values())
+        assert not fake.calls
+        assert client.get("/accounts/managed/session").json()["status"] == "logged_in"
+        clock.value += 10
+        assert client.get("/accounts/static/session").json()["status"] == "logged_out"
+        clock.value += 10
+        assert client.get("/accounts/failed/session").json()["status"] == "unknown"
+        clock.value += settings.account_status_ttl + 1
+        calls = list(fake.calls)
+        rows = {row["id"]: row for row in client.get("/accounts").json()}
+        assert (rows["managed"]["session_status"], rows["managed"]["session_checked_at"]) == ("logged_in", 1000)
+        assert (rows["static"]["session_status"], rows["static"]["session_checked_at"]) == ("logged_out", 1010)
+        assert (rows["failed"]["session_status"], rows["failed"]["session_checked_at"]) == (None, None)
+        assert rows["managed"]["password"] == "secret"
+        assert rows["static"]["password"] is None and rows["static"]["proxy_url"] is None
+        assert client.get("/accounts/managed").json() == rows["managed"]
+        assert client.get("/accounts/static").json() == rows["static"]
+        assert fake.calls == calls

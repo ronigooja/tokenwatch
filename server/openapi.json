@@ -2355,6 +2355,33 @@
             "type": "integer",
             "title": "Failures"
           },
+          "session_status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "logged_in",
+                  "logged_out",
+                  "unknown"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Status"
+          },
+          "session_checked_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Checked At"
+          },
           "managed": {
             "type": "boolean",
             "title": "Managed",

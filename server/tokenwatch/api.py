@@ -249,7 +249,10 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
     def account_out(row, client):
         getter = getattr(client, "account_config", None)
         config, managed = getter(row.id) if getter else (None, False)
+        gate = app.state.gate
+        checked_at, status = gate.status_cache.get(row.id, (None, None)) if gate else (None, None)
         return {**s.AccountOut.model_validate(row).model_dump(), "managed": managed,
+                "session_status": status, "session_checked_at": checked_at,
                 "timezone": config.timezone if config else None, "persona": config.persona if config else None,
                 "email": config.email if managed else None, "password": config.password if managed else None,
                 "proxy_url": config.proxy_url if managed else None}
