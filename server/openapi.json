@@ -1141,6 +1141,7 @@
     "/exclusions": {
       "get": {
         "summary": "List Exclusions",
+        "description": "List manual exclusions, excluding catalog-rule exclusions.",
         "operationId": "list_exclusions",
         "responses": {
           "200": {
@@ -1168,6 +1169,7 @@
     "/exclusions/{coin_id}": {
       "get": {
         "summary": "Get Exclusion",
+        "description": "Get a manual exclusion by coin ID.",
         "operationId": "get_exclusion_exclusions__coin_id__get",
         "security": [
           {

@@ -365,6 +365,32 @@ def test_api_accountless_catalog_rules_and_native_override(settings):
         assert client.get("/coin-catalog/exclusion-rules").json()[0]["kind"] == "tag"
 
 
+def test_manual_exclusions_are_distinct_from_catalog_rules(settings):
+    app = create_app(settings, run_scheduler=False)
+    with TestClient(app, headers={"Authorization": "Bearer test-token"}) as client:
+        with app.state.store.begin() as db:
+            db.add_all([Coin(id="manual", symbol="MANUAL", status="supported", match_status="supported"),
+                        Coin(id="rule", symbol="RULE", status="excluded", reason="stablecoin",
+                             catalog_status="excluded", catalog_reason="stablecoin")])
+        assert client.put("/exclusions/manual", json={"reason": "manual reason"}).json() == {
+            "coin_id": "manual", "reason": "manual reason"}
+        assert client.get("/exclusions").json() == [{"coin_id": "manual", "reason": "manual reason"}]
+        assert client.get("/exclusions/manual").json() == {"coin_id": "manual", "reason": "manual reason"}
+        assert client.get("/exclusions/rule").status_code == 404
+        assert client.delete("/exclusions/rule").status_code == 404
+        coins = {row["id"]: (row["status"], row["reason"]) for row in client.get("/coins").json()}
+        assert coins == {"manual": ("excluded", "manual reason"), "rule": ("excluded", "stablecoin")}
+        assert client.delete("/exclusions/manual").status_code == 204
+        assert client.get("/coins/manual").json()["status"] == "supported"
+        assert client.put("/exclusions/rule", json={"reason": "override"}).status_code == 200
+        assert client.get("/exclusions/rule").json()["reason"] == "override"
+        assert client.get("/coins/rule").json()["reason"] == "override"
+        assert client.delete("/exclusions/rule").status_code == 204
+        coin = client.get("/coins/rule").json()
+        assert (coin["status"], coin["reason"]) == ("excluded", "stablecoin")
+        assert client.get("/exclusions").json() == []
+
+
 def test_schema_reset_preserves_history_and_jobs(settings):
     store = open_store(settings.database)
     with store.begin() as db:
