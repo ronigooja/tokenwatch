@@ -255,9 +255,9 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
                 if any(row.id.casefold() == body.id.casefold() or row.proxy_ref == proxy_ref for row in rows):
                     raise HTTPException(409, "Account conflicts with existing data")
                 used = {a.fingerprint_seed for a in getattr(client, "_accounts", {}).values()}
-                seed = secrets.randbits(63)
+                seed = secrets.randbits(32)
                 while seed in used:
-                    seed = secrets.randbits(63)
+                    seed = secrets.randbits(32)
                 account = AccountConfig(body.id, body.proxy_url, seed, body.timezone, body.persona)
                 row = Account(id=body.id, proxy_ref=proxy_ref, status="active")
                 db.add(row)

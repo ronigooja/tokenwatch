@@ -39,6 +39,7 @@ def test_create_reload_and_delete(accounts):
     assert client.post("/accounts", json=body("b")).status_code == 201
     config = BrowserConfig.from_toml(source, "key")
     assert len({a.fingerprint_seed for a in config.accounts}) == 2
+    assert all(0 <= a.fingerprint_seed < 2**32 for a in config.accounts)
     assert os.stat(config.accounts_file).st_mode & 0o777 == 0o600
     assert "secret" not in client.get("/accounts").text
     assert client.delete("/accounts/a").status_code == 204
