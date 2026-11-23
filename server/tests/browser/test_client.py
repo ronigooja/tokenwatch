@@ -259,11 +259,21 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         session = FakeSession()
         session.titles = deque(["Just a moment..."])
         client, _, _ = self.client(session, cf_wait_seconds=0, idle_timeout=0.01)
-        login = asyncio.create_task(client.manual_login("one"))
+        ready = []
+        login = asyncio.create_task(client.manual_login("one", ready=lambda: ready.append(session.opened)))
         with self.assertRaises(TimeoutError):
             await asyncio.wait_for(asyncio.shield(login), 0.03)
         self.assertTrue(session.opened)
+        self.assertEqual(ready, [True])
         self.assertFalse(session.closed.is_set())
         self.assertEqual(session.fetches, [])
         session.closed.set()
         await asyncio.wait_for(login, 1)
+
+    async def test_manual_login_does_not_signal_failed_launch(self):
+        client, _, forwarder = self.client(FakeSession())
+        forwarder.error = RuntimeError("failed")
+        ready = []
+        with self.assertRaises(Blocked):
+            await client.manual_login("one", ready=lambda: ready.append(True))
+        self.assertEqual(ready, [])
