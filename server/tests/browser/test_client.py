@@ -137,6 +137,18 @@ class ResponseTests(unittest.TestCase):
 
 
 class ClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_optional_settle_once_and_disabled(self):
+        from unittest.mock import AsyncMock
+        for seconds, count in ((15, 1), (0, 0)):
+            session = FakeSession()
+            session.settle = AsyncMock()
+            client, _, _ = self.client(session, page_settle_seconds=seconds)
+            await client.get_json("one", "/user")
+            await client.get_json("one", "/user")
+            self.assertEqual(session.settle.await_count, count)
+            self.assertEqual(len(session.fetches), 2)
+            await client.aclose()
+
     async def test_interactive_exempt_and_runtime_remove(self):
         from tempfile import TemporaryDirectory
         with TemporaryDirectory() as directory:

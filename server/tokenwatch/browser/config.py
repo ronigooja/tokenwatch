@@ -68,6 +68,7 @@ class BrowserConfig:
     max_instances: int = 1
     idle_timeout: float = 60
     cf_wait_seconds: float = 30
+    page_settle_seconds: float = 15
     accounts_file: Path | None = None
     managed_ids: frozenset[str] = frozenset()
 
@@ -80,6 +81,8 @@ class BrowserConfig:
             raise ValueError("idle_timeout must be positive and finite")
         if not math.isfinite(self.cf_wait_seconds) or self.cf_wait_seconds < 0:
             raise ValueError("cf_wait_seconds must be nonnegative and finite")
+        if not math.isfinite(self.page_settle_seconds) or self.page_settle_seconds < 0:
+            raise ValueError("page_settle_seconds must be nonnegative and finite")
         if len({account.id.casefold() for account in self.accounts}) != len(self.accounts):
             raise ValueError("Duplicate browser account ID")
 

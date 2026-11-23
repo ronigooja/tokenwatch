@@ -41,6 +41,38 @@ class PersonaTests(unittest.TestCase):
 
 
 class BrowserDomTests(unittest.IsolatedAsyncioTestCase):
+    async def test_probe_recovery_never_repeats_fetch(self):
+        page = MagicMock()
+        page.wait_for_load_state = AsyncMock()
+        page.evaluate = AsyncMock(side_effect=[RuntimeError("Execution context was destroyed"),
+                                                "https://arkm.com", {"status": 200, "body": "[]"}])
+        session = _PlaywrightSession(MagicMock(), MagicMock(), page)
+        await session.fetch("https://api.arkm.com/user", {})
+        self.assertEqual(page.evaluate.await_count, 3)
+        self.assertEqual(sum(len(call.args) == 2 for call in page.evaluate.await_args_list), 1)
+        page.wait_for_load_state.assert_awaited_once_with("load", timeout=15000)
+
+    async def test_failed_probes_and_fetch_are_not_retried(self):
+        for effects, expected_fetches in (([RuntimeError("Execution context was destroyed")] * 2, 0),
+                                          (["origin", RuntimeError("Execution context was destroyed")], 1),
+                                          ([RuntimeError("Target page, context or browser has been closed")], 0)):
+            page = MagicMock(evaluate=AsyncMock(side_effect=effects), wait_for_load_state=AsyncMock())
+            session = _PlaywrightSession(MagicMock(), MagicMock(), page)
+            with self.assertRaises(RuntimeError):
+                await session.fetch("https://api.arkm.com/user", {})
+            self.assertEqual(sum(len(call.args) == 2 for call in page.evaluate.await_args_list), expected_fetches)
+
+    async def test_settle_tolerates_networkidle_timeout_and_checks_page(self):
+        page = MagicMock(url="https://arkm.com/", title=AsyncMock(return_value=""))
+        page.wait_for_load_state = AsyncMock(side_effect=[None, TimeoutError()])
+        session = _PlaywrightSession(MagicMock(), MagicMock(), page)
+        await session.settle(2)
+        self.assertEqual([c.args[0] for c in page.wait_for_load_state.await_args_list], ["load", "networkidle"])
+        page.url = "https://example.invalid/"
+        page.wait_for_load_state = AsyncMock()
+        with self.assertRaises(RuntimeError):
+            await session.settle(2)
+
     async def test_only_visible_actions_indicate_login_state(self):
         page = MagicMock(url="https://arkm.com/")
         session = _PlaywrightSession(MagicMock(), MagicMock(), page)

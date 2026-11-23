@@ -6,6 +6,8 @@ accounts_file = "accounts.local.toml"
 max_instances = 1
 idle_timeout = 60
 cf_wait_seconds = 30
+# Seconds per load-state wait; 0 disables settling and the recovery wait.
+page_settle_seconds = 15
 
 [[accounts]]
 id = "account-example"

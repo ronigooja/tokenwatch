@@ -1,6 +1,7 @@
 # Arkham upstream
 
 Base URL: `https://api.arkm.com`. No official API key is used; requests run from a logged-in browser page.
+Browser readiness and safe pre-fetch probing are described in [architecture.md](architecture.md#components).
 
 ## Access
 

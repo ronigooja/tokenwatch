@@ -115,8 +115,8 @@ async def _through(forward: Forward, action: Callable[[], Awaitable[T]], diagnos
                 except Exception:
                     pass
             if context:
-                detail = f"{detail[:35]} {context}"
-            raise _BrowserFailure(detail[:120]) from None
+                detail = f"{detail[:100]} {context}"[:160]
+            raise _BrowserFailure(detail[:160]) from None
         return operation.result()
     finally:
         for task in (operation, exited):
@@ -261,6 +261,12 @@ class BrowserUpstreamClient:
             await _through(forward, session.open_site)
             if not interactive:
                 await self._wait_for_challenge(session, forward)
+                configure = getattr(session, "configure_page_settle", None)
+                if configure is not None:
+                    configure(self._config.page_settle_seconds)
+                settle = getattr(session, "settle", None)
+                if settle is not None and self._config.page_settle_seconds:
+                    await _through(forward, lambda: settle(self._config.page_settle_seconds))
             ready = True
             return _Instance(session, forward)
         finally:

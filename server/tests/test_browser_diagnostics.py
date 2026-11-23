@@ -49,7 +49,9 @@ def test_browser_failure_detail(message, caplog):
     exc.endpoint = "/user"
     last_error = Scheduler.log_failure(SimpleNamespace(id=1, kind="test"), exc)
     assert exc.detail.startswith("TypeError:")
-    assert len(exc.detail) <= 120 and len(last_error) <= 200
+    assert len(exc.detail) <= 160 and len(last_error) <= 200
+    if len(message) == 500:
+        assert exc.detail.startswith("TypeError: " + "x" * 89)
     assert "Just a moment..." in exc.detail
     assert "https://arkm.com/login" in exc.detail
     for secret in ("example.com", "hidden", "user:pass@host", "fragment", "?token"):

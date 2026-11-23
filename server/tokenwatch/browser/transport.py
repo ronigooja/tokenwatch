@@ -58,12 +58,29 @@ class _PlaywrightSession:
         self._driver = driver
         self._context = context
         self._page = page
+        self._page_settle_seconds = 15
         self._closed = asyncio.Event()
         context.on("close", lambda *_: self._closed.set())
         page.on("close", lambda *_: self._closed.set())
 
     async def open_site(self) -> None:
         await self._page.goto(SITE_URL, wait_until="domcontentloaded")
+
+    def configure_page_settle(self, timeout: float) -> None:
+        self._page_settle_seconds = timeout
+
+    async def settle(self, timeout: float) -> None:
+        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+        await self._page.wait_for_load_state("load", timeout=timeout * 1000)
+        try:
+            await self._page.wait_for_load_state("networkidle", timeout=timeout * 1000)
+        except (PlaywrightTimeoutError, TimeoutError):
+            pass
+        if not (await self._page.title()).strip():
+            parts = urlsplit(self._page.url)
+            if (parts.scheme, parts.netloc) != ("https", "arkm.com"):
+                raise RuntimeError("Page has no title and unexpected origin")
 
     async def login_page(self, page: str, email: str | None, password: str | None, timeout: float) -> None:
         try:
@@ -117,6 +134,15 @@ class _PlaywrightSession:
         return "unknown"
 
     async def fetch(self, url: str, headers: dict[str, str]) -> Response:
+        try:
+            await self._page.evaluate("() => location.origin")
+        except Exception as error:
+            if ("Execution context was destroyed" not in str(error)
+                    or "Target page, context or browser has been closed" in str(error)):
+                raise
+            if self._page_settle_seconds:
+                await self._page.wait_for_load_state("load", timeout=self._page_settle_seconds * 1000)
+            await self._page.evaluate("() => location.origin")
         result = await self._page.evaluate(
             """async ({url, headers}) => {
                 if (location.origin !== 'https://arkm.com') throw new Error('Unexpected page origin');
