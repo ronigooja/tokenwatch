@@ -10,7 +10,7 @@ from sqlalchemy import and_, delete, or_, select
 
 from .db import Account, Job, Snapshot, Transfer, now
 from .rules import alert
-from .upstream import AuthRequired, Blocked, RateLimited, RequestRejected, UNSUPPORTED_TOKEN, UpstreamError
+from .upstream import AuthRequired, BadResponse, Blocked, RateLimited, RequestRejected, UNSUPPORTED_TOKEN, UpstreamError
 
 
 logger = logging.getLogger(__name__)
@@ -105,6 +105,7 @@ class RequestGate:
                 payload = await self.upstream.get_json(account_id, path, params)
                 result = decode(payload)
             except UpstreamError as exc:
+                exc.endpoint = safe_endpoint(path)
                 if isinstance(exc, AuthRequired):
                     self.remember_status(account_id, "logged_out")
                 if probe and not isinstance(exc, PAUSING_ERRORS):
@@ -131,6 +132,12 @@ class RequestGate:
             return result
 
 
+def safe_endpoint(path):
+    if path.startswith("/token/addresses/"):
+        return "/token/addresses/"
+    return path if path in {"/intelligence/search", "/intelligence/entity_balance_changes", "/transfers", "/user"} else "unknown"
+
+
 class Scheduler:
     def __init__(self, store, settings, handlers, clock=time.time):
         self.store = store
@@ -142,26 +149,41 @@ class Scheduler:
     async def run_job(self, job: Job):
         next_run = self.clock() + job.interval_seconds
         wait_reason = None
+        last_error = None
+        success = False
         try:
             scheduled = await self.handlers[job.kind](job)
+            success = True
             if scheduled is not None:
                 next_run = scheduled
         except DistributionWait as exc:
             next_run, wait_reason = exc.retry_at, exc.reason
         except AccountUnavailable:
             next_run = self.clock()
-        except UpstreamError:
+        except UpstreamError as exc:
+            last_error = self.log_failure(job, exc)
             with self.store() as db:
                 if job.account_id is not None and (account := db.get(Account, job.account_id)):
                     next_run = max(self.clock(), account.available_at)
-        except Exception:
-            logger.exception("Job %s failed", job.id)
+        except Exception as exc:
+            last_error = self.log_failure(job, exc)
         with self.store.begin() as db:
             current = db.get(Job, job.id)
             if current and all(getattr(current, key) == getattr(job, key) for key in (
                 "next_run", "enabled", "account_id", "kind", "coin_id", "options", "interval_seconds"
             )):
                 current.next_run, current.wait_reason = next_run, wait_reason
+                if success or last_error is not None:
+                    current.last_error = last_error
+
+    @staticmethod
+    def log_failure(job, exc):
+        endpoint = safe_endpoint(getattr(exc, "endpoint", ""))
+        status = exc.status if isinstance(exc, BadResponse) and type(exc.status) is int else None
+        category = type(exc).__name__ + (f":{status}" if status is not None else "")
+        logger.warning("job_id=%s job_kind=%s endpoint=%s exception=%s status=%s",
+                       job.id, job.kind, endpoint, type(exc).__name__, status)
+        return f"{category} on {endpoint}"
 
     def tick(self):
         self.running = {key: task for key, task in self.running.items() if not task.done()}

@@ -3498,6 +3498,17 @@
               }
             ],
             "title": "Wait Reason"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
           }
         },
         "additionalProperties": false,
@@ -3507,7 +3518,8 @@
           "interval_seconds",
           "id",
           "next_run",
-          "wait_reason"
+          "wait_reason",
+          "last_error"
         ],
         "title": "JobOut"
       },

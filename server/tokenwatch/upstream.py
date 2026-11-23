@@ -28,6 +28,10 @@ class RateLimited(UpstreamError):
 class BadResponse(UpstreamError):
     """Non-JSON body or an unexpected status."""
 
+    def __init__(self, message: str = "", *, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
 
 class RequestRejected(BadResponse):
     """Unexpected HTTP 400 or non-challenge HTTP 403."""

@@ -89,7 +89,7 @@ def test_config_environment_and_migration(settings, tmp_path, monkeypatch):
         store = open_store(loaded.database)
         with store() as db:
             assert db.scalar(text("PRAGMA journal_mode")) == "wal"
-            assert db.scalar(text("PRAGMA user_version")) == 2
+            assert db.scalar(text("PRAGMA user_version")) == 3
         store.kw["bind"].dispose()
 
 
@@ -297,3 +297,41 @@ def test_api_crud_snapshots_filters_and_socket(settings):
 
 def test_openapi_matches_export():
     assert json.loads((Path(__file__).parents[1] / "openapi.json").read_text()) == create_app().openapi()
+
+
+def test_job_failure_logging_and_recovery(core, settings, caplog):
+    store, fake, clock, gate, _ = core
+    with store.begin() as db:
+        db.add(Job(kind="coin_catalog", account_id="a", enabled=True, interval_seconds=30))
+    fake.responses.append(BadResponse("secret cookie header token", status=503))
+
+    async def handler(job):
+        await gate.get(job.account_id, "/intelligence/search", {"query": "secret-query"})
+
+    scheduler = Scheduler(store, settings, {"coin_catalog": handler}, clock)
+    with store() as db:
+        job = db.get(Job, 1)
+    asyncio.run(scheduler.run_job(job))
+    with store() as db:
+        assert db.get(Job, 1).last_error == "BadResponse:503 on /intelligence/search"
+        job = db.get(Job, 1)
+    assert "job_id=1 job_kind=coin_catalog endpoint=/intelligence/search exception=BadResponse status=503" in caplog.text
+    assert all(secret not in caplog.text for secret in ("secret", "cookie", "header", "token", "query="))
+    async def success(job):
+        return None
+    scheduler.handlers["coin_catalog"] = success
+    asyncio.run(scheduler.run_job(job))
+    with store() as db:
+        assert db.get(Job, 1).last_error is None
+
+
+def test_failure_endpoint_and_http_status_are_sanitized(caplog):
+    from tokenwatch.browser.client import _decode
+    from tokenwatch.browser.transport import Response
+    from tokenwatch.upstream import RequestRejected
+    with pytest.raises(RequestRejected) as caught:
+        _decode(Response(403, 'private body'), 0, '/token/addresses/secret')
+    caught.value.endpoint = '/token/addresses/secret'
+    job = SimpleNamespace(id=9, kind='coin_catalog')
+    assert Scheduler.log_failure(job, caught.value) == 'RequestRejected:403 on /token/addresses/'
+    assert 'secret' not in caplog.text and 'private' not in caplog.text

@@ -184,6 +184,7 @@ class JobOut(JobInput):
     id: int
     next_run: float
     wait_reason: str | None
+    last_error: str | None
 
 
 class RuleConditions(Schema):
