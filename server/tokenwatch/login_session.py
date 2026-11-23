@@ -97,7 +97,7 @@ class LoginSessions:
         if activate:
             with self.store.begin() as db:
                 account = db.get(Account, session.account_id)
-                if account:
+                if account and account.pause_reason == "login":
                     account.status, account.pause_reason = "active", None
         self.history[session.account_id] = "closed" if activate else "failed"
         self.current = None
