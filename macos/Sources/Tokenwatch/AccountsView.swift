@@ -6,7 +6,10 @@ struct AccountsView: View {
     let client: APIClient
     @State private var accounts: [Account] = []
     @State private var sessions: [String: AccountSession.Status] = [:]
+    @State private var checkedAt: [String: Date] = [:]
     @State private var checkErrors: [String: String] = [:]
+    @State private var checkingID: String?
+    @State private var refreshTask: Task<Void, Never>?
     @State private var lastPause: [String: Event] = [:]
     @State private var selection: String?
     @State private var adding = false
@@ -29,7 +32,7 @@ struct AccountsView: View {
                 Text("Upstream Accounts").font(.headline)
                 Spacer()
                 Button("Add Account") { adding = true }
-                Button("Refresh Status") { action.run { try await load() } }.disabled(action.busy)
+                Button("Refresh Status") { refreshSessions() }.disabled(refreshTask != nil)
             }
             if !signedOut.isEmpty {
                 Label("Login required: \(signedOut.map(\.label).joined(separator: ", "))", systemImage: "exclamationmark.octagon.fill")
@@ -40,8 +43,12 @@ struct AccountsView: View {
                     .width(min: 180, ideal: 260)
                 TableColumn("Status") { (account: Account) in Text(account.status.rawValue) }
                 TableColumn("Session") { (account: Account) in
-                    Text(sessions[account.id]?.rawValue ?? "—")
-                        .foregroundStyle(signedOut.contains(where: { $0.id == account.id }) ? Color.red : Color.primary)
+                    HStack(spacing: 6) {
+                        if checkingID == account.id { ProgressView().controlSize(.small) }
+                        Text(sessionText(account))
+                    }
+                    .lineLimit(1)
+                    .foregroundStyle(signedOut.contains(where: { $0.id == account.id }) ? Color.red : Color.primary)
                 }
                 TableColumn("Timezone") { (account: Account) in Text(account.timezone ?? "—") }
                 TableColumn("Proxy URL") { (account: Account) in Text(account.proxyUrl ?? "—") }
@@ -75,6 +82,7 @@ struct AccountsView: View {
             .font(.caption)
             .frame(height: 60, alignment: .topLeading)
         }.navigationTitle("Accounts").task { await action.load { try await load() } }
+            .onDisappear { refreshTask?.cancel() }
             .sheet(isPresented: $adding, onDismiss: {
                 loggingIn = pendingLogin
                 pendingLogin = nil
@@ -95,6 +103,8 @@ struct AccountsView: View {
                     switch result {
                     case .success(let status):
                         sessions[request.account.id] = status
+                        checkedAt[request.account.id] = .now
+                        checkErrors[request.account.id] = nil
                         loginNote = "Session check for \(request.account.label): \(status.rawValue)"
                     case .failure(let error):
                         loginNote = "Session check for \(request.account.label) failed: \(error.localizedDescription)"
@@ -105,6 +115,22 @@ struct AccountsView: View {
             .confirmationDialog("Delete the selected account?", isPresented: $confirmingDelete) {
                 Button("Delete Account", role: .destructive) { action.run { try await deleteSelected() } }
             }
+    }
+
+    private func sessionText(_ account: Account) -> String {
+        guard let status = sessions[account.id] else { return "—" }
+        guard let checked = checkedAt[account.id] else { return status.rawValue }
+        return "\(status.rawValue) · \(age(checked))"
+    }
+
+    private func age(_ date: Date) -> String {
+        let seconds = max(0, Int(Date.now.timeIntervalSince(date)))
+        switch seconds {
+        case ..<60: return "\(seconds)s"
+        case ..<3600: return "\(seconds / 60)m"
+        case ..<86400: return "\(seconds / 3600)h"
+        default: return "\(seconds / 86400)d"
+        }
     }
 
     private func setPaused(_ account: Account) async throws {
@@ -118,20 +144,42 @@ struct AccountsView: View {
         try await client.deleteAccount(id)
         accounts.removeAll { $0.id == id }
         sessions[id] = nil
+        checkedAt[id] = nil
         checkErrors[id] = nil
         lastPause[id] = nil
         selection = nil
+    }
+
+    private func refreshSessions() {
+        guard refreshTask == nil else { return }
+        refreshTask = Task {
+            defer {
+                refreshTask = nil
+                checkingID = nil
+            }
+            for id in accounts.map(\.id) {
+                guard !Task.isCancelled else { return }
+                checkingID = id
+                do {
+                    sessions[id] = try await client.accountSession(id).status
+                    checkedAt[id] = .now
+                    checkErrors[id] = nil
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    checkErrors[id] = error.localizedDescription
+                }
+            }
+        }
     }
 
     private func load() async throws {
         let current = try await client.accounts()
         accounts = current
         sessions = [:]
-        checkErrors = [:]
+        checkedAt = [:]
         for account in current {
-            try Task.checkCancellation()
-            do { sessions[account.id] = try await client.accountSession(account.id).status }
-            catch { checkErrors[account.id] = error.localizedDescription }
+            if let status = account.sessionStatus { sessions[account.id] = status }
+            if let checked = account.sessionCheckedAt { checkedAt[account.id] = Date(timeIntervalSince1970: checked) }
         }
         var filter = EventFilter()
         filter.kind = "account_paused"

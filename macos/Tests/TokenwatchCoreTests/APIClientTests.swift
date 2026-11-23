@@ -274,13 +274,28 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(old.managed)
         XCTAssertNil(old.timezone)
         XCTAssertNil(old.persona)
+        XCTAssertNil(old.sessionStatus)
+        XCTAssertNil(old.sessionCheckedAt)
         let current = try APIClient.decoder().decode(Account.self, from: Data(accountFixture.utf8))
         XCTAssertEqual(current.managed, true)
         XCTAssertEqual(current.label, "user@example.com")
         XCTAssertEqual(current.persona, "windows")
+        XCTAssertNil(current.sessionStatus)
+        XCTAssertNil(current.sessionCheckedAt)
         let idle = try APIClient.decoder().decode(AccountLogin.self, from: Data(#"{"state":"none","path":null}"#.utf8))
         XCTAssertEqual(idle.state, .none)
         XCTAssertNil(idle.path)
+    }
+
+    func testAccountDecodesCachedSessionFields() throws {
+        let cached = #"{"id":"cached","status":"active","available_at":0,"failures":0,"session_status":"logged_in","session_checked_at":1700000000.5}"#
+        let logged = try APIClient.decoder().decode(Account.self, from: Data(cached.utf8))
+        XCTAssertEqual(logged.sessionStatus, .loggedIn)
+        XCTAssertEqual(logged.sessionCheckedAt, 1700000000.5)
+        let empty = #"{"id":"cached","status":"active","available_at":0,"failures":0,"session_status":null,"session_checked_at":null}"#
+        let unset = try APIClient.decoder().decode(Account.self, from: Data(empty.utf8))
+        XCTAssertNil(unset.sessionStatus)
+        XCTAssertNil(unset.sessionCheckedAt)
     }
 
     func testUnauthorized() async throws {
