@@ -253,7 +253,7 @@ private struct JobForm: View {
             Picker("Job type", selection: $kind) {
                 ForEach(JobKind.allCases, id: \.self) { item in Text(item.rawValue).tag(item) }
             }
-            AccountPicker(accounts: accounts, selection: $account, anyAccountLabel: "Any account")
+            AccountPicker(accounts: accounts, selection: $account, anyAccountLabel: kind == .transfers ? nil : "Any account")
             if kind == .transfers { CoinPicker(coins: coins, selection: $coin) }
             if kind == .daily { TextField("Minimum USD", text: $minimum) }
             TextField("Frequency (seconds)", text: $frequency)
@@ -261,15 +261,27 @@ private struct JobForm: View {
             ActionNotice(action: action)
             HStack {
                 Button("Cancel") { dismiss() }
-                Button("Save Job") { action.run { try await save() } }.disabled(kind == .transfers && coin.isEmpty)
+                Button("Save Job") { action.run { try await save() } }
+                    .disabled(kind == .transfers && (account.isEmpty || coin.isEmpty))
             }
         }.formStyle(.grouped).frame(width: 420).disabled(action.busy).interactiveDismissDisabled(action.busy)
             .onAppear {
-                guard let job else { return }
+                guard let job else { account = defaultAccount(for: .transfers); return }
                 kind = job.kind; account = job.accountId ?? ""; coin = job.coinId ?? ""
                 frequency = String(job.intervalSeconds); minimum = job.options.balanceMin.map { String($0) } ?? ""
                 enabled = job.enabled
             }
+            .onChange(of: kind) { _, newKind in
+                if newKind == .transfers, account.isEmpty { account = defaultAccount(for: .transfers) }
+            }
+            .onChange(of: accounts.map(\.id)) { _, _ in
+                if kind == .transfers, account.isEmpty { account = defaultAccount(for: .transfers) }
+            }
+    }
+
+    /// Transfers jobs must name an account; other kinds default to any active account.
+    private func defaultAccount(for kind: JobKind) -> String {
+        kind == .transfers ? accounts.first?.id ?? "" : ""
     }
 
     private func save() async throws {
@@ -278,7 +290,11 @@ private struct JobForm: View {
         }
         let balanceMin = try (kind == .daily ? minimum.nonnegative("Minimum USD") : nil)
         if kind == .daily, balanceMin == nil { throw InputError("Enter the daily job's minimum USD.") }
-        let body = JobInput(kind: kind, accountId: account.nonblank, coinId: kind == .transfers ? coin : nil,
+        let chosenAccount = account.nonblank
+        if kind == .transfers, chosenAccount == nil { throw InputError("Choose an account for a transfers job.") }
+        if kind == .transfers, coin.isEmpty { throw InputError("Choose a coin for a transfers job.") }
+        let body = JobInput(kind: kind, accountId: chosenAccount,
+                            coinId: kind == .transfers ? coin : nil,
                             options: JobOptions(balanceMin: balanceMin), intervalSeconds: interval, enabled: enabled)
         onSave(try await client.saveJob(body, id: job?.id))
     }

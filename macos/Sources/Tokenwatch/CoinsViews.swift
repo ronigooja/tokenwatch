@@ -12,6 +12,7 @@ struct CoinsView: View {
     @State private var settingMapping = false
     @State private var excluding = false
     @State private var action = ActionState()
+    @State private var mappingLookup = ActionState()
 
     private var selected: Coin? { coins.first(where: { $0.id == selection }) }
 
@@ -62,7 +63,7 @@ struct CoinsView: View {
             .task(id: selection) {
                 mapping = nil
                 guard let id = selection else { return }
-                mapping = try? await client.coinMapping(id)
+                await mappingLookup.load { mapping = try await client.coinMapping(id) }
             }
             .sheet(isPresented: $settingMapping) {
                 if let coin = selected {
@@ -100,6 +101,7 @@ struct CoinsView: View {
                     }
                 }
                 Divider()
+                ActionNotice(action: mappingLookup)
                 HStack {
                     Button("Set Arkham coin number…") { settingMapping = true }
                     if mapping != nil {
