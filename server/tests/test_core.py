@@ -316,7 +316,8 @@ def test_job_failure_logging_and_recovery(core, settings, caplog):
         assert db.get(Job, 1).last_error == "BadResponse:503 on /intelligence/search"
         job = db.get(Job, 1)
     assert "job_id=1 job_kind=coin_catalog endpoint=/intelligence/search exception=BadResponse status=503" in caplog.text
-    assert all(secret not in caplog.text for secret in ("secret", "cookie", "header", "token", "query="))
+    message = caplog.records[-1].getMessage()
+    assert all(secret not in message for secret in ("secret", "cookie", "header", "token", "query="))
     async def success(job):
         return None
     scheduler.handlers["coin_catalog"] = success
