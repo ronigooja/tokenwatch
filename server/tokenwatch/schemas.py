@@ -39,6 +39,13 @@ class Deployment(Schema):
     deposit_enabled: bool | None
     withdraw_enabled: bool | None
 
+    @model_validator(mode="before")
+    @classmethod
+    def public_fields(cls, value):
+        if isinstance(value, dict):
+            return {key: value[key] for key in cls.model_fields if key in value}
+        return value
+
 
 class CoinOut(Schema):
     id: CoinRef
@@ -177,6 +184,7 @@ class JobOut(JobInput):
     id: int
     next_run: float
     wait_reason: str | None
+    last_error: str | None
 
 
 class RuleConditions(Schema):

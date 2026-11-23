@@ -69,14 +69,14 @@ def _decode(response: Response, now: float, path: str = "") -> Any:
         if isinstance(body, dict) and set(body) == {"message"}:
             return UNSUPPORTED_TOKEN
     if response.status in (400, 403):
-        raise RequestRejected(f"Unexpected upstream HTTP status: {response.status}")
+        raise RequestRejected(f"Unexpected upstream HTTP status: {response.status}", status=response.status)
     if not 200 <= response.status < 300:
-        raise BadResponse(f"Unexpected upstream HTTP status: {response.status}")
+        raise BadResponse(f"Unexpected upstream HTTP status: {response.status}", status=response.status)
     try:
         return json.loads(response.body, parse_constant=_invalid_json_constant)
     except (ValueError, RecursionError):
         pass
-    raise BadResponse("Upstream response is not JSON")
+    raise BadResponse("Upstream response is not JSON", status=response.status)
 
 
 async def _through(forward: Forward, action: Callable[[], Awaitable[T]]) -> T:

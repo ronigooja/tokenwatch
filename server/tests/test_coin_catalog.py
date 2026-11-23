@@ -65,6 +65,52 @@ def mock_feeds(feeds, calls):
     return httpx.MockTransport(fetch)
 
 
+def test_optional_network_fields_and_empty_tags():
+    from tokenwatch.coins import candidates, classify, parse_feeds
+    feeds = catalog_feeds()
+    rows = feeds[NETWORK_URL]["data"]
+    rows[-1]["networkList"] = [{"network": "BTC", "contractAddress": None, "depositEnable": True}]
+    rows[-2]["networkList"] = [{"network": "BTC", "contractAddress": None, "depositEnable": True}]
+    feeds[ASSET_URL]["data"][-1]["tags"] = [""]
+    snapshot = parse_feeds(*feeds.values())
+    coins = {row.symbol: row for row in candidates(snapshot)}
+    assert coins["BTC"].id == "native:BTC"
+    assert coins["BTC"].deployments[0]["withdraw_enabled"] is None
+    assert snapshot["assets"]["BTC"]["tags"] == []
+    assert coins["UNKNOWN"].id == "unknown:spot:UNKNOWN"
+    assert classify(coins["UNKNOWN"], snapshot, set(), [])[0] == "unknown_onchain"
+
+
+@pytest.mark.parametrize("bad", [{}, {"network": None, "contractAddress": "address"},
+                                {"network": "BTC", "contractAddress": 1, "depositEnable": True}])
+def test_malformed_network_is_retained_without_inventing_identity(bad):
+    from tokenwatch.coins import candidates, classify, parse_feeds
+    feeds = catalog_feeds()
+    feeds[NETWORK_URL]["data"][-1]["networkList"] = [bad]
+    snapshot = parse_feeds(*feeds.values())
+    coin = next(row for row in candidates(snapshot) if row.symbol == "BTC")
+    assert coin.id == "unknown:spot:BTC"
+    assert len(coin.deployments) == 1
+    assert classify(coin, snapshot, {"BTC"}, [])[0] == "unknown_onchain"
+
+
+@pytest.mark.parametrize("url,bad", [(SPOT_URL, {}), (NETWORK_URL, {"code": "000000"}),
+                                    (ASSET_URL, {"code": "error", "data": []})])
+def test_top_level_failure_preserves_snapshot(core, url, bad):
+    store, _, clock, gate, _ = core
+    feeds = catalog_feeds()
+    catalog = CoinCatalog(store, gate, mock_feeds(feeds, []), clock)
+    asyncio.run(catalog.refresh_snapshot())
+    with store() as db:
+        snapshot = copy.deepcopy(db.get(CatalogCache, "binance").payload)
+    feeds[url] = bad
+    clock.value += 1
+    asyncio.run(catalog.refresh_snapshot())
+    with store() as db:
+        cache = db.get(CatalogCache, "binance")
+        assert cache.payload == snapshot and cache.refreshed_at == 1000 and cache.error
+
+
 def test_catalog_rules_futures_identity_and_fallback(core):
     store, fake, clock, gate, _ = core
     calls, feeds = [], catalog_feeds()
@@ -114,6 +160,25 @@ def token(pricing_id, chain, contract):
 
 def search(*tokens):
     return {"bestMatches": [], "tokens": list(tokens)}
+
+
+def test_search_matches_realistic_responses():
+    from tokenwatch.coins import search_matches
+    contract = address(42)
+    payload = {"bestMatches": [], "arkhamEntities": [{"name": "ignored"}], "tokens": [
+        {"identifier": {"pricingID": "uniswap"}, "name": "Uniswap", "symbol": "UNI",
+         "price": None, "price24hAgo": None, "deployments": [
+             {"chain": "ethereum", "address": contract}, {"chain": "base", "address": contract}]},
+        {"identifier": {"pricingID": "other", "chain": "ethereum", "address": contract},
+         "name": "Other", "symbol": "OTH", "deployments": []},
+        {"identifier": None, "deployments": [{"chain": "base", "address": contract}]},
+        {"identifier": {"pricingID": "broken"}, "deployments": [{"chain": None, "address": contract}, {}]},
+    ]}
+    assert search_matches(payload, contract) == {"uniswap": {"ethereum", "base"}, "other": {"ethereum"}}
+    assert search_matches({"bestMatches": [{}], "tokens": [payload["tokens"][1]]}, contract) == {
+        "other": {"ethereum"}}
+    with pytest.raises(BadResponse):
+        search_matches({"bestMatches": []}, contract)
 
 
 def pending(db, id, chain, contract):
@@ -317,6 +382,56 @@ def test_api_accountless_catalog_rules_and_native_override(settings):
         assert client.put("/coin-catalog/futures-mappings/1000SHIB", json={"symbol": "SHIB"}).status_code == 200
         assert client.put("/coin-catalog/exclusion-rules/tag/stablecoin", json={"reason": "stablecoin"}).status_code == 200
         assert client.get("/coin-catalog/exclusion-rules").json()[0]["kind"] == "tag"
+
+
+def test_manual_exclusions_are_distinct_from_catalog_rules(settings):
+    app = create_app(settings, run_scheduler=False)
+    with TestClient(app, headers={"Authorization": "Bearer test-token"}) as client:
+        with app.state.store.begin() as db:
+            db.add_all([Coin(id="manual", symbol="MANUAL", status="supported", match_status="supported"),
+                        Coin(id="rule", symbol="RULE", status="excluded", reason="stablecoin",
+                             catalog_status="excluded", catalog_reason="stablecoin")])
+        assert client.put("/exclusions/manual", json={"reason": "manual reason"}).json() == {
+            "coin_id": "manual", "reason": "manual reason"}
+        assert client.get("/exclusions").json() == [{"coin_id": "manual", "reason": "manual reason"}]
+        assert client.get("/exclusions/manual").json() == {"coin_id": "manual", "reason": "manual reason"}
+        assert client.get("/exclusions/rule").status_code == 404
+        assert client.delete("/exclusions/rule").status_code == 404
+        coins = {row["id"]: (row["status"], row["reason"]) for row in client.get("/coins").json()}
+        assert coins == {"manual": ("excluded", "manual reason"), "rule": ("excluded", "stablecoin")}
+        assert client.delete("/exclusions/manual").status_code == 204
+        assert client.get("/coins/manual").json()["status"] == "supported"
+        assert client.put("/exclusions/rule", json={"reason": "override"}).status_code == 200
+        assert client.get("/exclusions/rule").json()["reason"] == "override"
+        assert client.get("/coins/rule").json()["reason"] == "override"
+        assert client.delete("/exclusions/rule").status_code == 204
+        coin = client.get("/coins/rule").json()
+        assert (coin["status"], coin["reason"]) == ("excluded", "stablecoin")
+        assert client.get("/exclusions").json() == []
+
+
+def test_catalog_deployments_serialize_without_internal_fields(settings):
+    feeds = catalog_feeds()
+    feeds[NETWORK_URL]["data"][-1]["networkList"][0]["contractAddress"] = None
+    app = create_app(settings, run_scheduler=False)
+    with TestClient(app, headers={"Authorization": "Bearer test-token"}) as client:
+        catalog = CoinCatalog(app.state.store, None, mock_feeds(feeds, []))
+        asyncio.run(catalog.refresh_snapshot())
+        with app.state.store() as db:
+            rows = db.scalars(select(Coin).where(Coin.symbol.in_(["BTC", "AVAX"]))).all()
+            assert any(len(row.deployments) > 1 for row in rows)
+            assert all("address_known" in deployment for row in rows for deployment in row.deployments)
+            coin_id = next(row.id for row in rows if row.symbol == "BTC")
+        for url, params in [("/coins", {}), (f"/coins/{coin_id}", {}),
+                            ("/coins", {"status": "needs_manual_mapping"})]:
+            response = client.get(url, params=params)
+            assert response.status_code == 200
+            result = response.json()
+            for coin in result if isinstance(result, list) else [result]:
+                assert set(coin) == {"id", "symbol", "pricing_id", "status", "reason", "sources",
+                                     "deployments", "matched_chains"}
+                for deployment in coin["deployments"]:
+                    assert set(deployment) == {"feed", "chain", "address", "deposit_enabled", "withdraw_enabled"}
 
 
 def test_schema_reset_preserves_history_and_jobs(settings):

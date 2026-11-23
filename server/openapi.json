@@ -1141,6 +1141,7 @@
     "/exclusions": {
       "get": {
         "summary": "List Exclusions",
+        "description": "List manual exclusions, excluding catalog-rule exclusions.",
         "operationId": "list_exclusions",
         "responses": {
           "200": {
@@ -1168,6 +1169,7 @@
     "/exclusions/{coin_id}": {
       "get": {
         "summary": "Get Exclusion",
+        "description": "Get a manual exclusion by coin ID.",
         "operationId": "get_exclusion_exclusions__coin_id__get",
         "security": [
           {
@@ -3496,6 +3498,17 @@
               }
             ],
             "title": "Wait Reason"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
           }
         },
         "additionalProperties": false,
@@ -3505,7 +3518,8 @@
           "interval_seconds",
           "id",
           "next_run",
-          "wait_reason"
+          "wait_reason",
+          "last_error"
         ],
         "title": "JobOut"
       },

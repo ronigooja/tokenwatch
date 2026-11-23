@@ -98,6 +98,7 @@ class Job(Base):
     enabled: Mapped[bool] = mapped_column(default=False)
     next_run: Mapped[float] = mapped_column(default=0)
     wait_reason: Mapped[str | None]
+    last_error: Mapped[str | None]
     __table_args__ = (UniqueConstraint("kind", "coin_id"),
                       Index("ix_jobs_singleton_kind", "kind", unique=True, sqlite_where=text("coin_id IS NULL")),
                       {"sqlite_autoincrement": True})
@@ -271,11 +272,13 @@ def open_store(path: Path):
             Base.metadata.create_all(connection)
         elif version == 1:
             migrate_v1(connection)
-        elif version != 2:
+        elif version not in (2, 3):
             raise RuntimeError(f"Unsupported database schema version: {version}")
+        if version == 2:
+            connection.exec_driver_sql("ALTER TABLE jobs ADD COLUMN last_error VARCHAR")
         if version == 1 and connection.exec_driver_sql("PRAGMA foreign_key_check").first():
             raise RuntimeError("Foreign key violation after coin schema migration")
-        connection.execute(text("PRAGMA user_version=2"))
+        connection.execute(text("PRAGMA user_version=3"))
         connection.commit()
         connection.execute(text("PRAGMA foreign_keys=ON"))
     return sessionmaker(engine, expire_on_commit=False)

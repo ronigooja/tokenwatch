@@ -47,8 +47,14 @@ def envelope(payload):
 
 
 def network(row):
-    return {"chain": field(row, "network", str), "address": field(row, "contractAddress", str, empty=True) or None,
-            "deposit_enabled": field(row, "depositEnable", bool), "withdraw_enabled": field(row, "withdrawEnable", bool),
+    def optional(name, kind):
+        value = row.get(name) if isinstance(row, dict) else None
+        return value if type(value) is kind and (kind is not str or value) else None
+
+    raw_address = row.get("contractAddress") if isinstance(row, dict) else None
+    return {"chain": optional("network", str), "address": optional("contractAddress", str),
+            "address_known": raw_address is None or type(raw_address) is str,
+            "deposit_enabled": optional("depositEnable", bool), "withdraw_enabled": optional("withdrawEnable", bool),
             "feed": "spot"}
 
 
@@ -63,9 +69,13 @@ def indexed(rows, key, parse):
 
 
 def parse_assets(row):
-    tags = field(row, "tags", list, empty=True)
-    if not all(isinstance(tag, str) and tag for tag in tags):
-        raise ValueError("invalid asset tag")
+    tags = row.get("tags")
+    if tags is None:
+        tags = []
+    elif not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
+        tags = None
+    else:
+        tags = [tag for tag in tags if tag]
     return {"fiat": field(row, "isLegalMoney", bool), "ledger_only": field(row, "isLedgerOnly", bool), "tags": tags}
 
 
@@ -116,13 +126,14 @@ class Candidate:
 
 
 def deployment_keys(deployments):
-    return {(row["chain"], normalize(row["address"])) for row in deployments if row["address"]}
+    return {(row["chain"], normalize(row["address"])) for row in deployments if row["chain"] and row["address"]}
 
 
 def candidates(snapshot):
     for symbol in snapshot["spot"]:
         deployments = snapshot["networks"].get(symbol, {}).get("deployments", [])
-        usable = [row for row in deployments if row["address"] or row["deposit_enabled"] or row["withdraw_enabled"]]
+        usable = [row for row in deployments if row["chain"] and row.get("address_known", True) and (
+            row["address"] or row["chain"] == symbol and (row["deposit_enabled"] or row["withdraw_enabled"]))]
         if usable:
             # A same-name native network takes precedence over bridged deployments.
             anchor = min(usable, key=lambda row: (bool(row["address"] or row["chain"] != symbol), not row["address"],
@@ -155,11 +166,13 @@ def classify(candidate, snapshot, futures_symbols, policies):
         reasons = {reason for kind, value, reason in policies if (
             kind == "flag" and value == "isLegalMoney" and (
                 (metadata and metadata["fiat"]) or (networks and networks["fiat"]))
-            or kind == "tag" and metadata and value in metadata["tags"])}
+             or kind == "tag" and metadata and metadata["tags"] is not None and value in metadata["tags"])}
         if reasons:
             return "excluded", "; ".join(sorted(reasons))
-    if candidate.feed == "spot" and (not metadata or not any(
-        row["address"] or row["deposit_enabled"] or row["withdraw_enabled"] for row in candidate.deployments
+    if candidate.feed == "spot" and (not metadata or metadata["tags"] is None or not any(
+        row["chain"] and row.get("address_known", True) and (
+            row["address"] or row["chain"] == candidate.symbol and (
+                row["deposit_enabled"] or row["withdraw_enabled"])) for row in candidate.deployments
     )):
         return "unknown_onchain", "missing asset metadata or usable Binance network"
     if candidate.symbol not in futures_symbols:
@@ -168,25 +181,25 @@ def classify(candidate, snapshot, futures_symbols, policies):
 
 
 def search_matches(payload, address):
-    try:
-        field(payload, "bestMatches", list, empty=True)
-        tokens = field(payload, "tokens", list, empty=True)
-        matches = defaultdict(set)
-        for token in tokens:
-            identifier = field(token, "identifier", dict)
-            pricing_id = field(identifier, "pricingID", str)
-            if not PRICING_ID.fullmatch(pricing_id) or ".." in pricing_id:
-                raise ValueError("invalid pricing ID")
-            deployments = field(token, "deployments", list, empty=True)
-            for deployment in [identifier, *deployments]:
-                if deployment is identifier and "address" not in identifier:
-                    continue
-                chain = field(deployment, "chain", str)
-                if normalize(field(deployment, "address", str)) == normalize(address):
-                    matches[pricing_id].add(chain)
-        return matches
-    except ValueError as exc:
-        raise BadResponse("invalid token search payload") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("tokens"), list):
+        raise BadResponse("invalid token search payload")
+    matches = defaultdict(set)
+    for token in payload["tokens"]:
+        identifier = token.get("identifier") if isinstance(token, dict) else None
+        if not isinstance(identifier, dict):
+            continue
+        pricing_id = identifier.get("pricingID")
+        if not isinstance(pricing_id, str) or not PRICING_ID.fullmatch(pricing_id) or ".." in pricing_id:
+            continue
+        deployments = token.get("deployments")
+        deployments = deployments if isinstance(deployments, list) else []
+        for deployment in [identifier, *deployments]:
+            if not isinstance(deployment, dict):
+                continue
+            chain, contract = deployment.get("chain"), deployment.get("address")
+            if isinstance(chain, str) and chain and isinstance(contract, str) and contract and normalize(contract) == normalize(address):
+                matches[pricing_id].add(chain)
+    return matches
 
 
 def support_status(payload):
@@ -215,7 +228,7 @@ def sync_coin(db, coin):
         coin.reason = "Arkham does not support the manual pricing ID" if coin.status == "unsupported" else None
     elif coin.match_status:
         coin.status, coin.reason = coin.match_status, coin.match_reason
-    elif not coin.id.startswith("native:") and any(row["address"] for row in coin.deployments):
+    elif not coin.id.startswith("native:") and any(row["chain"] and row["address"] for row in coin.deployments):
         coin.status, coin.reason = "pending_match", None
     else:
         coin.status, coin.reason = "needs_manual_mapping", "no searchable contract address"
@@ -297,7 +310,7 @@ class CoinCatalog:
                     return False
                 manual = db.get(CoinMapping, coin.id)
             if coin.status == "pending_match":
-                deployment = min((row for row in coin.deployments if row["address"]),
+                deployment = min((row for row in coin.deployments if row["chain"] and row["address"]),
                                  key=lambda row: (row["chain"], normalize(row["address"])))
                 address = deployment["address"]
                 matches = await self.gate.get(job.account_id, SEARCH_PATH, {"query": address},

@@ -295,15 +295,13 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
 
     @app.get("/exclusions", response_model=list[s.ExclusionOut], dependencies=auth, operation_id="list_exclusions")
     def list_exclusions(db: DB):
-        query = select(Coin).where(Coin.status == "excluded").order_by(Coin.id)
-        return [{"coin_id": row.id, "reason": row.reason} for row in db.scalars(query)]
+        """List manual exclusions, excluding catalog-rule exclusions."""
+        return db.scalars(select(Exclusion).order_by(Exclusion.coin_id)).all()
 
     @app.get("/exclusions/{coin_id}", response_model=s.ExclusionOut, dependencies=auth)
     def get_exclusion(coin_id: s.CoinRef, db: DB):
-        coin = find(db, Coin, coin_id)
-        if coin.status != "excluded":
-            raise HTTPException(404, "Resource not found")
-        return {"coin_id": coin_id, "reason": coin.reason}
+        """Get a manual exclusion by coin ID."""
+        return find(db, Exclusion, coin_id)
 
     @app.put("/exclusions/{coin_id}", response_model=s.ExclusionOut, dependencies=auth)
     def put_exclusion(coin_id: s.CoinRef, body: s.ExclusionInput, db: DB):
