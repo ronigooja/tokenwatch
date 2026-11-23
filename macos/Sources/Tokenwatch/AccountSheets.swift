@@ -142,7 +142,8 @@ struct LoginSheet: View {
                 }
             }
             .lineLimit(1)
-            .frame(maxWidth: .infinity, height: 18, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: 18)
             if let loginURL {
                 LoginWebView(server: client.serverURL, url: loginURL).frame(minHeight: 520)
             } else {
