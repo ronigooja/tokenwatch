@@ -26,6 +26,12 @@ class BadResponse(UpstreamError):
 
 
 class UpstreamClient(Protocol):
+    def account_config(self, account_id: str) -> Any: ...
+
+    async def add_account(self, account: Any) -> None: ...
+
+    async def remove_account(self, account_id: str) -> None: ...
+
     async def get_json(
         self, account_id: str, path: str, params: dict[str, str] | None = None
     ) -> Any:

@@ -8,3 +8,7 @@ See [architecture.md](../../../docs/architecture.md) and [arkham-upstream.md](..
 - Use `BrowserUpstreamClient` as an async context manager, or call `aclose()` during service shutdown. The scheduler owns pacing and backoff. A confirmed forwarder exit blocks that account for the lifetime of the pool; recreating the pool is required to retry.
 - `persona` per account is `none` (no `--fingerprint-*` flags) or `windows` (fingerprint-chromium Windows persona). `disable_spoofing` (default `["canvas"]`) lists fingerprint features passed to `--disable-spoofing` under the Windows persona; see [arkham-upstream.md](../../../docs/arkham-upstream.md) for why canvas is on it. Set `timezone` to the proxy exit's timezone. The browser runs sandboxed as a non-root user under a window manager.
 - `account_status` only inspects visible login/logout buttons or links in the page. It does not open menus or probe the API; without a matching control it returns `unknown`.
+
+## Managed accounts
+
+See [Accounts](../../../docs/architecture.md#accounts) for the API and persistence model. Set `accounts_file` to a writable private location; relative paths resolve beside the browser configuration. The server owns this file and writes it with mode `0600`.

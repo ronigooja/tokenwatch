@@ -198,6 +198,8 @@ def test_api_session_reads_share_cache(settings):
     app = create_app(settings, fake, run_scheduler=False)
     with TestClient(app) as client:
         client.headers.update({"Authorization": "Bearer test-token"})
+        with app.state.store.begin() as db:
+            db.add(Account(id="a", proxy_ref="p", status="active"))
         client.put("/accounts/a", json={"proxy_ref": "p"})
         for _ in range(3):
             assert client.get("/accounts/a/session").json() == {"status": "logged_in"}

@@ -2,6 +2,7 @@
 .env
 .env.*
 config.local.*
+accounts.local.toml
 *.pw
 proxies*.txt
 secrets/

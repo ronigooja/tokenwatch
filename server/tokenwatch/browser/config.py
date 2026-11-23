@@ -1,5 +1,8 @@
 import math
+import json
+import os
 import re
+import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -63,6 +66,8 @@ class BrowserConfig:
     max_instances: int = 1
     idle_timeout: float = 60
     cf_wait_seconds: float = 30
+    accounts_file: Path | None = None
+    managed_ids: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not isinstance(self.signing_key, str) or not self.signing_key:
@@ -85,8 +90,37 @@ class BrowserConfig:
                 data["signing_key"] = signing_key
             for name in ("binary_path", "profiles_root"):
                 data[name] = path.parent / Path(data[name]).expanduser()
-            data["accounts"] = tuple(AccountConfig(**account) for account in data["accounts"])
+            accounts_file = path.parent / Path(data.pop("accounts_file", "accounts.local.toml")).expanduser()
+            managed = []
+            if accounts_file.exists():
+                with accounts_file.open("rb") as source:
+                    managed = tomllib.load(source).get("accounts", [])
+            data["accounts"] = tuple(AccountConfig(**account) for account in data.get("accounts", []) + managed)
+            data["accounts_file"] = accounts_file
+            data["managed_ids"] = frozenset(account["id"] for account in managed)
             return cls(**data)
         except (OSError, KeyError, TypeError, ValueError, OverflowError):
             pass
         raise ValueError("Cannot read browser configuration")
+
+
+def write_accounts(path: Path, accounts: list[AccountConfig]) -> None:
+    lines = []
+    for account in accounts:
+        lines.append("[[accounts]]")
+        for key in ("id", "proxy_url", "fingerprint_seed", "timezone", "persona", "disable_spoofing"):
+            value = getattr(account, key)
+            lines.append(f"{key} = {json.dumps(value, ensure_ascii=True)}")
+        lines.append("")
+    name = None
+    try:
+        fd, name = tempfile.mkstemp(prefix=".accounts-", dir=path.parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            os.fchmod(output.fileno(), 0o600)
+            output.write("\n".join(lines))
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(name, path)
+    finally:
+        if name is not None and os.path.exists(name):
+            os.unlink(name)

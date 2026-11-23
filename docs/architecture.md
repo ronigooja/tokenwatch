@@ -29,6 +29,10 @@ Session status probes use signed `/user` requests through the account request ga
 
 ## Invariants
 
+### Accounts
+
+Authenticated REST endpoints list, inspect, create, pause/resume, and delete accounts. The browser configuration's `[[accounts]]` are static and cannot be deleted through the API; accounts created through the API are managed in the separate `accounts_file` (default `accounts.local.toml` beside the browser configuration). The server atomically replaces this private file and updates the running pool without a restart. Account deletion requires that no job references it and preserves its profile directory. Proxy URLs and credentials are not returned by the API. Interactive login leases do not consume the non-interactive instance limit and are not idle-evicted while active.
+
 - Each account is bound to one proxy; there is no direct-connection fallback. Why: avoid exposing the server IP and mixing identities.
 - Event rules, thresholds, and exclusions are data, not code. Why: they change without deployments.
 - Transfer polling targets half the visible window per fetch, subject to configured polling and account rate limits. The first rate estimate is the returned count divided by its timestamp span; fewer than two rows or zero span uses the maximum interval. Once a nonempty baseline exists, a nonempty fetch that reaches no known transfer ID marks a gap and raises an alert. Why: the upstream exposes only the newest transfers.

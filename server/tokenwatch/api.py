@@ -4,9 +4,11 @@ from contextlib import asynccontextmanager, suppress
 from datetime import date, datetime, timedelta, timezone
 from importlib import import_module
 from typing import Annotated
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -21,6 +23,7 @@ from .db import (Account, Coin, CoinMapping, DailyBalance, DailyCollection, Even
                  now, open_store)
 from .scheduler import AccountUnavailable, RequestGate, Scheduler
 from .upstream import UpstreamError
+from .browser.config import AccountConfig, proxy_parts
 
 
 Page = Annotated[int, Query(ge=1, le=500)]
@@ -175,6 +178,7 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
             client = getattr(import_module(module), factory)(config)
         store = open_store(config.database)
         app.state.settings, app.state.store, app.state.upstream = config, store, client
+        app.state.accounts_lock = asyncio.Lock()
         app.state.collectors = None
         app.state.gate = None
         task = None
@@ -205,14 +209,94 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
     async def conflict(_request, _error):
         return JSONResponse(status_code=409, content={"detail": "Resource conflicts with existing data"})
 
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request, error):
+        if request.url.path == "/accounts" and request.method == "POST":
+            return JSONResponse(status_code=422, content={"detail": "Invalid account input"})
+        from fastapi.encoders import jsonable_encoder
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(error.errors())})
+
     resource(app, "coins", Coin, s.CoinInput, s.CoinOut, validate=validate_coin, remove=remove_coin)
     resource(app, "subscriptions", Subscription, s.SubscriptionInput, s.SubscriptionOut,
              key="coin_id", validate=validate_subscription)
-    resource(app, "accounts", Account, s.AccountInput, s.AccountOut, validate=validate_account)
     resource(app, "jobs", Job, s.JobInput, s.JobOut, generated=True, key_type=int, validate=validate_job)
     resource(app, "exclusions", Exclusion, s.ExclusionInput, s.ExclusionOut, key="coin_id",
              validate=validate_exclusion, remove=remove_exclusion)
     resource(app, "rules", Rule, s.RuleInput, s.RuleOut, generated=True, key_type=int)
+
+    def account_out(row, client):
+        getter = getattr(client, "account_config", None)
+        config, managed = getter(row.id) if getter else (None, False)
+        return {**s.AccountOut.model_validate(row).model_dump(), "managed": managed,
+                "timezone": config.timezone if config else None, "persona": config.persona if config else None}
+
+    @app.get("/accounts", response_model=list[s.AccountOut], dependencies=auth, operation_id="list_accounts")
+    def list_accounts(db: DB, request: Request):
+        return [account_out(row, request.app.state.upstream) for row in db.scalars(select(Account).order_by(Account.id))]
+
+    @app.get("/accounts/{account_id}", response_model=s.AccountOut, dependencies=auth, operation_id="get_accounts")
+    def get_account(account_id: s.Ref, db: DB, request: Request):
+        return account_out(find(db, Account, account_id), request.app.state.upstream)
+
+    @app.post("/accounts", response_model=s.AccountOut, status_code=201, dependencies=auth, operation_id="create_accounts")
+    async def create_account(body: s.AccountCreate, request: Request):
+        client = request.app.state.upstream
+        if not callable(getattr(client, "add_account", None)):
+            raise HTTPException(503, "Browser pool unavailable")
+        try:
+            proxy_parts(body.proxy_url)
+            ZoneInfo(body.timezone)
+        except (ValueError, ZoneInfoNotFoundError):
+            raise HTTPException(422, "Invalid account input") from None
+        async with request.app.state.accounts_lock:
+            with request.app.state.store.begin() as db:
+                rows = db.scalars(select(Account)).all()
+                proxy_ref = f"proxy-{body.id}"
+                if any(row.id.casefold() == body.id.casefold() or row.proxy_ref == proxy_ref for row in rows):
+                    raise HTTPException(409, "Account conflicts with existing data")
+                used = {a.fingerprint_seed for a in getattr(client, "_accounts", {}).values()}
+                seed = secrets.randbits(63)
+                while seed in used:
+                    seed = secrets.randbits(63)
+                account = AccountConfig(body.id, body.proxy_url, seed, body.timezone, body.persona)
+                row = Account(id=body.id, proxy_ref=proxy_ref, status="active")
+                db.add(row)
+                db.flush()
+                try:
+                    await client.add_account(account)
+                except ValueError:
+                    raise HTTPException(409, "Account conflicts with existing data") from None
+                except (OSError, UpstreamError):
+                    raise HTTPException(503, "Browser pool unavailable") from None
+                return account_out(row, client)
+
+    @app.put("/accounts/{account_id}", response_model=s.AccountOut, dependencies=auth, operation_id="put_accounts")
+    def put_account(account_id: s.Ref, body: s.AccountInput, db: DB, request: Request):
+        row = find(db, Account, account_id)
+        values = body.model_dump()
+        validate_account(db, row, values)
+        for key, value in values.items():
+            setattr(row, key, value)
+        db.flush()
+        return account_out(row, request.app.state.upstream)
+
+    @app.delete("/accounts/{account_id}", status_code=204, dependencies=auth, operation_id="delete_accounts")
+    async def delete_account(account_id: s.Ref, request: Request):
+        client = request.app.state.upstream
+        async with request.app.state.accounts_lock:
+            with request.app.state.store.begin() as db:
+                row = find(db, Account, account_id)
+                getter = getattr(client, "account_config", None)
+                _, managed = getter(account_id) if getter else (None, False)
+                if not managed or db.scalar(select(Job.id).where(Job.account_id == account_id).limit(1)) is not None:
+                    raise HTTPException(409, "Account cannot be deleted")
+                try:
+                    await client.remove_account(account_id)
+                except (OSError, UpstreamError):
+                    raise HTTPException(503, "Browser pool unavailable") from None
+                db.delete(row)
+                db.flush()
+        return Response(status_code=204)
 
     @app.get("/accounts/{account_id}/session", response_model=s.AccountSession, dependencies=auth)
     async def account_session(account_id: s.Ref, db: DB, request: Request):

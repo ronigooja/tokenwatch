@@ -2,6 +2,7 @@
 # The signing key comes from the server settings, not from this file.
 binary_path = "/path/to/fingerprint-chromium"
 profiles_root = "profiles"
+accounts_file = "accounts.local.toml"
 max_instances = 1
 idle_timeout = 60
 cf_wait_seconds = 30

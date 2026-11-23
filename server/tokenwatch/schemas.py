@@ -54,11 +54,21 @@ class AccountInput(Schema):
     status: Literal["active", "paused"] = "active"
 
 
+class AccountCreate(Schema):
+    id: Annotated[str, Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$")]
+    proxy_url: str
+    timezone: str
+    persona: Literal["none", "windows"] = "windows"
+
+
 class AccountOut(AccountInput):
     id: str
     pause_reason: str | None
     available_at: float
     failures: int
+    managed: bool = False
+    timezone: str | None = None
+    persona: str | None = None
 
 
 class AccountSession(Schema):

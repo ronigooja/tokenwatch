@@ -133,6 +133,23 @@ class ResponseTests(unittest.TestCase):
 
 
 class ClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_interactive_exempt_and_runtime_remove(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as directory:
+            login, other = FakeSession(), FakeSession()
+            client, _, forwards = self.client(login, other, accounts_file=Path(directory) / "accounts.toml")
+            await client.add_account(AccountConfig("three", PROXY, 3))
+            task = asyncio.create_task(client.manual_login("one"))
+            while not login.opened:
+                await asyncio.sleep(0)
+            self.assertEqual(await asyncio.wait_for(client.get_json("three", "/user"), 2), [])
+            self.assertFalse(login.closed.is_set())
+            await client.remove_account("three")
+            self.assertTrue(other.closed.is_set())
+            self.assertFalse(forwards.started[1].alive)
+            login.closed.set()
+            await task
+
     async def test_user_login_status(self):
         session = FakeSession()
         client, _, _ = self.client(session)

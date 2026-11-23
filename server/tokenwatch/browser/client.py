@@ -12,7 +12,7 @@ from typing import Any, TypeVar
 from urllib.parse import urlencode
 
 from ..upstream import AuthRequired, BadResponse, Blocked, RateLimited
-from .config import AccountConfig, BrowserConfig
+from .config import AccountConfig, BrowserConfig, write_accounts
 from .transport import (
     API_ORIGIN, BrowserSession, Forward, Forwarder, Launcher, PlaywrightLauncher,
     PProxyForwarder, Response,
@@ -106,10 +106,12 @@ class BrowserUpstreamClient:
         self._forwarder = forwarder if forwarder is not None else PProxyForwarder()
         self._clock = clock
         self._accounts = {account.id: account for account in config.accounts}
+        self._managed_ids = set(config.managed_ids)
         self._locks = {account_id: asyncio.Lock() for account_id in self._accounts}
         self._changed = asyncio.Condition()
         self._instances: dict[str, _Instance] = {}
         self._starting = 0
+        self._interactive: set[str] = set()
         self._failed_proxies: set[str] = set()
         self._closed = False
 
@@ -149,6 +151,36 @@ class BrowserUpstreamClient:
     async def manual_login(self, account_id: str) -> None:
         async with self._lease(account_id, interactive=True) as instance:
             await _through(instance.forward, instance.session.wait_closed)
+
+    def account_config(self, account_id: str):
+        account = self._accounts.get(account_id)
+        return (account, account_id in self._managed_ids) if account else (None, False)
+
+    async def add_account(self, account: AccountConfig) -> None:
+        async with self._changed:
+            if self._closed or self._config.accounts_file is None:
+                raise BadResponse("Browser pool unavailable")
+            if any(key.casefold() == account.id.casefold() for key in self._accounts):
+                raise ValueError("Duplicate browser account ID")
+            write_accounts(self._config.accounts_file, [self._accounts[key] for key in sorted(self._managed_ids)] + [account])
+            self._accounts[account.id] = account
+            self._managed_ids.add(account.id)
+            self._locks[account.id] = asyncio.Lock()
+            self._changed.notify_all()
+
+    async def remove_account(self, account_id: str) -> None:
+        lock = self._locks[account_id]
+        async with lock, self._changed:
+            if account_id not in self._managed_ids or self._config.accounts_file is None:
+                raise ValueError("Account is not managed")
+            write_accounts(self._config.accounts_file, [self._accounts[key] for key in sorted(self._managed_ids - {account_id})])
+            if instance := self._instances.get(account_id):
+                await self._drop(account_id, instance)
+            del self._accounts[account_id]
+            del self._locks[account_id]
+            self._managed_ids.remove(account_id)
+            self._failed_proxies.discard(account_id)
+            self._changed.notify_all()
 
     async def _start(self, account: AccountConfig, interactive: bool) -> _Instance:
         try:
@@ -245,6 +277,8 @@ class BrowserUpstreamClient:
             raise BadResponse("Unknown browser account")
         async with self._locks[account_id]:
             async with self._changed:
+                if self._accounts.get(account_id) is not account:
+                    raise BadResponse("Unknown browser account")
                 while True:
                     if self._closed:
                         raise BadResponse("Browser pool is closed")
@@ -255,11 +289,17 @@ class BrowserUpstreamClient:
                         if not instance.forward.alive:
                             await self._drop(account_id, instance)
                             raise Blocked("Local proxy stopped")
-                        instance.idle.cancel()
+                        if instance.idle:
+                            instance.idle.cancel()
                         instance.idle = None
+                        if interactive:
+                            self._interactive.add(account_id)
                         break
-                    if len(self._instances) + self._starting < self._config.max_instances:
-                        self._starting += 1
+                    if interactive or len(self._instances.keys() - self._interactive) + self._starting < self._config.max_instances:
+                        if interactive:
+                            self._interactive.add(account_id)
+                        else:
+                            self._starting += 1
                         break
                     idle = [(slot.idle.when(), key, slot) for key, slot in self._instances.items() if slot.idle]
                     if idle:
@@ -272,7 +312,11 @@ class BrowserUpstreamClient:
                     instance = await self._start(account, interactive)
                 finally:
                     async with self._changed:
-                        self._starting -= 1
+                        if interactive:
+                            if instance is None:
+                                self._interactive.discard(account_id)
+                        else:
+                            self._starting -= 1
                         if instance is not None:
                             self._instances[account_id] = instance
                             instance.watcher = asyncio.create_task(self._watch(account_id, instance))
@@ -287,6 +331,7 @@ class BrowserUpstreamClient:
                 raise
             finally:
                 async with self._changed:
+                    self._interactive.discard(account_id)
                     if discard or self._closed or not instance.forward.alive:
                         await self._drop(account_id, instance)
                     else:
