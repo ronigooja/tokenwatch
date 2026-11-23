@@ -6,6 +6,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlsplit
 
 from .config import AccountConfig, proxy_parts
 
@@ -82,6 +83,27 @@ class _PlaywrightSession:
 
     async def title(self) -> str:
         return await self._page.title()
+
+    async def failure_context(self) -> str:
+        try:
+            parts = urlsplit(self._page.url)
+            # Never include userinfo, query or fragment.
+            origin = f"{parts.scheme}://{parts.hostname}" if parts.scheme in ("http", "https") and parts.hostname else ""
+            if origin and parts.port:
+                origin += f":{parts.port}"
+            path = parts.path if origin else ""
+            # Page paths may contain account-specific identifiers; retain only known static paths.
+            if path not in ("", "/", "/login", "/register", "/cdn-cgi/challenge-platform/"):
+                path = "/<redacted>"
+        except Exception:
+            origin, path = "", ""
+        try:
+            title = await self._page.title()
+            # Only the known challenge title is safe to expose from arbitrary pages.
+            title = "Just a moment..." if "just a moment" in title.lower() else ""
+        except Exception:
+            title = ""
+        return f"page={origin}{path} title={title[:60]}" if origin or title else ""
 
     async def account_status(self) -> str:
         if not self._page.url.startswith(SITE_URL):

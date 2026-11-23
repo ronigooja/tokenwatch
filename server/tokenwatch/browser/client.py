@@ -24,7 +24,17 @@ T = TypeVar("T")
 
 
 class _BrowserFailure(BadResponse):
-    pass
+    def __init__(self, detail: str):
+        self.detail = detail
+        super().__init__("Browser operation failed")
+
+
+def _sanitize_detail(value: str) -> str:
+    value = re.sub(r"https?://\S+", "<url>", value, flags=re.IGNORECASE)
+    value = re.sub(r"\S+:\S+@\S+", "<redacted>", value)
+    value = re.sub(r"\?\S*", "", value)
+    value = re.sub(r"(?i)\b(cookie|token|authorization|password|proxy)\s*[:=]\s*\S+", r"\1=<redacted>", value)
+    return " ".join(value.split())
 
 
 def sign_payload(path: str, timestamp: int, key: str) -> str:
@@ -79,7 +89,7 @@ def _decode(response: Response, now: float, path: str = "") -> Any:
     raise BadResponse("Upstream response is not JSON", status=response.status)
 
 
-async def _through(forward: Forward, action: Callable[[], Awaitable[T]]) -> T:
+async def _through(forward: Forward, action: Callable[[], Awaitable[T]], diagnostic=None) -> T:
     if not forward.alive:
         raise Blocked("Local proxy stopped")
 
@@ -92,8 +102,21 @@ async def _through(forward: Forward, action: Callable[[], Awaitable[T]]) -> T:
         done, _ = await asyncio.wait((operation, exited), return_when=asyncio.FIRST_COMPLETED)
         if exited in done or not forward.alive:
             raise Blocked("Local proxy stopped")
-        if not operation.cancelled() and operation.exception() is not None:
-            raise _BrowserFailure("Browser operation failed")
+        if not operation.cancelled() and (error := operation.exception()) is not None:
+            try:
+                message = str(error).splitlines()[0] if str(error) else ""
+            except Exception:
+                message = ""
+            detail = _sanitize_detail(f"{type(error).__name__}: {message}").rstrip(": ")
+            context = ""
+            if diagnostic is not None:
+                try:
+                    context = await diagnostic()
+                except Exception:
+                    pass
+            if context:
+                detail = f"{detail[:35]} {context}"
+            raise _BrowserFailure(detail[:120]) from None
         return operation.result()
     finally:
         for task in (operation, exited):
@@ -150,7 +173,8 @@ class BrowserUpstreamClient:
                 "X-Timestamp": str(timestamp),
                 "X-Payload": sign_payload(path, timestamp, self._config.signing_key),
             }
-            response = await _through(instance.forward, lambda: instance.session.fetch(url, headers))
+            response = await _through(instance.forward, lambda: instance.session.fetch(url, headers),
+                                      getattr(instance.session, "failure_context", None))
             return _decode(response, self._clock(), path)
 
     async def account_status(self, account_id: str) -> str:

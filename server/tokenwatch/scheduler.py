@@ -9,6 +9,7 @@ from uuid import uuid4
 from sqlalchemy import and_, delete, or_, select
 
 from .db import Account, Job, Snapshot, Transfer, now
+from .browser.client import _BrowserFailure
 from .rules import alert
 from .upstream import AuthRequired, BadResponse, Blocked, RateLimited, RequestRejected, UNSUPPORTED_TOKEN, UpstreamError
 
@@ -181,9 +182,13 @@ class Scheduler:
         endpoint = safe_endpoint(getattr(exc, "endpoint", ""))
         status = exc.status if isinstance(exc, BadResponse) and type(exc.status) is int else None
         category = type(exc).__name__ + (f":{status}" if status is not None else "")
+        if isinstance(exc, _BrowserFailure):
+            logger.warning("job_id=%s job_kind=%s endpoint=%s exception=%s status=%s detail=%s",
+                           job.id, job.kind, endpoint, type(exc).__name__, status, exc.detail)
+            return f"{category}[{exc.detail}] on {endpoint}"[:200]
         logger.warning("job_id=%s job_kind=%s endpoint=%s exception=%s status=%s",
                        job.id, job.kind, endpoint, type(exc).__name__, status)
-        return f"{category} on {endpoint}"
+        return f"{category} on {endpoint}"[:200]
 
     def tick(self):
         self.running = {key: task for key, task in self.running.items() if not task.done()}
