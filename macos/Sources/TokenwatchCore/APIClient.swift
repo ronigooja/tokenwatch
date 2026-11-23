@@ -47,6 +47,8 @@ public struct APIClient: Sendable {
         self.session = session ?? Self.privateSession
     }
 
+    public var serverURL: URL { server }
+
     static func decoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -123,6 +125,30 @@ public struct APIClient: Sendable {
     public func accounts() async throws -> [Account] { try await decode(request(["accounts"])) }
     public func accountSession(_ id: String) async throws -> AccountSession {
         try await decode(request(["accounts", id, "session"]))
+    }
+
+    public func createAccount(_ input: AccountInput) async throws -> Account {
+        try await decode(request(["accounts"], method: "POST", body: input))
+    }
+
+    public func saveAccount(_ id: String, update: AccountUpdate) async throws -> Account {
+        try await decode(request(["accounts", id], method: "PUT", body: update))
+    }
+
+    public func deleteAccount(_ id: String) async throws {
+        _ = try await send(request(["accounts", id], method: "DELETE"))
+    }
+
+    public func startAccountLogin(_ id: String) async throws -> AccountLogin {
+        try await decode(request(["accounts", id, "login"], method: "POST"))
+    }
+
+    public func accountLoginState(_ id: String) async throws -> AccountLogin {
+        try await decode(request(["accounts", id, "login"]))
+    }
+
+    public func finishAccountLogin(_ id: String) async throws -> AccountLoginFinish {
+        try await decode(request(["accounts", id, "login", "finish"], method: "POST"))
     }
 
     public func events(_ filter: EventFilter = .init()) async throws -> [Event] {

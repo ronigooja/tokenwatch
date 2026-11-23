@@ -190,6 +190,43 @@ public struct Account: Codable, Sendable, Identifiable {
     public let pauseReason: String?
     public let availableAt: Double
     public let failures: Int
+    public let managed: Bool?
+    public let timezone: String?
+    public let persona: String?
+}
+
+public struct AccountInput: Encodable, Sendable {
+    public let id: String
+    public let proxyUrl: String
+    public let timezone: String
+    public let persona: String
+
+    public init(id: String, proxyUrl: String, timezone: String, persona: String) {
+        self.id = id
+        self.proxyUrl = proxyUrl
+        self.timezone = timezone
+        self.persona = persona
+    }
+}
+
+public struct AccountUpdate: Encodable, Sendable {
+    public let proxyRef: String
+    public let status: Account.Status
+
+    public init(proxyRef: String, status: Account.Status) {
+        self.proxyRef = proxyRef
+        self.status = status
+    }
+}
+
+public struct AccountLogin: Codable, Sendable {
+    public enum Phase: String, Codable, Sendable { case none, starting, open, closed, failed }
+    public let state: Phase
+    public let path: String?
+}
+
+public struct AccountLoginFinish: Codable, Sendable {
+    public let status: AccountSession.Status
 }
 
 public struct AccountSession: Codable, Sendable {
