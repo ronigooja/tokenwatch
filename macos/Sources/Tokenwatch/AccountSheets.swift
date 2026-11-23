@@ -2,57 +2,92 @@ import SwiftUI
 import TokenwatchCore
 import WebKit
 
-private let timezoneSuggestions = [
-    "UTC", "America/New_York", "America/Los_Angeles", "Europe/London", "Europe/Berlin",
-    "Asia/Singapore", "Asia/Shanghai", "Asia/Tokyo", "Australia/Sydney",
-]
+struct LoginRequest: Identifiable {
+    let account: Account
+    let page: LoginPage
+    var id: String { "\(account.id)/\(page.rawValue)" }
+}
 
 @MainActor
 struct AccountForm: View {
     let client: APIClient
-    let onSave: (Account) -> Void
+    let existing: Account?
+    let onSave: (Account, LoginPage?) -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var id = ""
-    @State private var proxyURL = ""
-    @State private var timezone = ""
-    @State private var persona = "windows"
+    @State private var email: String
+    @State private var password: String
+    @State private var proxyURL: String
     @State private var action = ActionState()
+
+    init(client: APIClient, existing: Account? = nil, onSave: @escaping (Account, LoginPage?) -> Void) {
+        self.client = client
+        self.existing = existing
+        self.onSave = onSave
+        _email = State(initialValue: existing?.label ?? "")
+        _password = State(initialValue: existing?.password ?? "")
+        _proxyURL = State(initialValue: existing?.proxyUrl ?? "")
+    }
 
     var body: some View {
         Form {
-            TextField("Account ID", text: $id)
-            SecureField("Proxy URL (socks5h://user:pass@host:port)", text: $proxyURL)
-            HStack {
-                TextField("Timezone (IANA)", text: $timezone)
-                Menu("Suggestions") {
-                    ForEach(timezoneSuggestions, id: \.self) { zone in Button(zone) { timezone = zone } }
-                }.fixedSize()
+            TextField("Email", text: $email).disabled(existing != nil)
+            TextField("Password", text: $password)
+            TextField("Proxy URL (socks5h://user:pass@host:port)", text: $proxyURL)
+            if existing == nil {
+                Text("The server detects the timezone and uses the Windows persona.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            Picker("Persona", selection: $persona) {
-                Text("Windows").tag("windows")
-                Text("None").tag("none")
-            }
-            Text("The proxy URL is sent once and never shown again.").font(.caption).foregroundStyle(.secondary)
             ActionNotice(action: action)
             HStack {
                 Button("Cancel") { dismiss() }
-                Button("Add Account") { action.run { try await save() } }
-                    .disabled(id.isEmpty || proxyURL.isEmpty || timezone.nonblank == nil)
+                if existing == nil {
+                    Button("Add Account") { action.run { try await add(.login) } }
+                    Button("Add and Register") { action.run { try await add(.register) } }
+                } else {
+                    Button("Save") { action.run { try await update() } }
+                }
             }
         }.formStyle(.grouped).frame(width: 460).disabled(action.busy).interactiveDismissDisabled(action.busy)
-            .onDisappear { proxyURL = "" }
     }
 
-    private func save() async throws {
-        guard id.range(of: #"^[a-zA-Z0-9][a-zA-Z0-9_-]*$"#, options: .regularExpression) != nil else {
-            throw InputError("Enter an ID that starts with a letter or digit and contains only letters, digits, hyphens, and underscores.")
+    private func add(_ page: LoginPage) async throws {
+        let mail = try validEmail()
+        let secret = try validPassword()
+        let proxy = try validProxy()
+        let account = try await client.createAccount(AccountInput(email: mail, password: secret, proxyUrl: proxy))
+        onSave(account, page)
+        dismiss()
+    }
+
+    private func update() async throws {
+        guard let existing else { return }
+        let proxy = try validProxy()
+        let secret = try validPassword()
+        let update = AccountUpdate(proxyUrl: proxy == existing.proxyUrl ? nil : proxy,
+                                   password: secret == existing.password ? nil : secret)
+        if update.proxyUrl != nil || update.password != nil {
+            onSave(try await client.saveAccount(existing.id, update: update), nil)
         }
-        guard let proxy = proxyURL.nonblank, proxy.hasPrefix("socks5h://") else {
+        dismiss()
+    }
+
+    private func validEmail() throws -> String {
+        guard let text = email.nonblank, text.filter({ $0 == "@" }).count == 1 else {
+            throw InputError("Enter the account email address.")
+        }
+        return text
+    }
+
+    private func validPassword() throws -> String {
+        guard !password.isEmpty else { throw InputError("Enter the account password.") }
+        return password
+    }
+
+    private func validProxy() throws -> String {
+        guard let text = proxyURL.nonblank, text.hasPrefix("socks5h://") else {
             throw InputError("The proxy URL must start with socks5h://.")
         }
-        guard let zone = timezone.nonblank else { throw InputError("Enter an IANA timezone.") }
-        defer { proxyURL = "" }
-        onSave(try await client.createAccount(AccountInput(id: id, proxyUrl: proxy, timezone: zone, persona: persona)))
+        return text
     }
 }
 
@@ -60,6 +95,7 @@ struct AccountForm: View {
 struct LoginSheet: View {
     let client: APIClient
     let account: Account
+    let page: LoginPage
     let onFinish: (Result<AccountSession.Status, Error>) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var phase: AccountLogin.Phase?
@@ -68,6 +104,8 @@ struct LoginSheet: View {
     @State private var finished = false
     @State private var note: String?
     @State private var action = ActionState()
+
+    private var title: String { page == .register ? "Register" : "Log In" }
 
     private var loginURL: URL? {
         guard let path, path.hasPrefix("/"), !path.hasPrefix("//") else { return nil }
@@ -80,7 +118,10 @@ struct LoginSheet: View {
         switch phase {
         case nil: return action.busy ? "Requesting the login window…" : "The login window is unavailable."
         case .starting?: return "Starting the remote browser…"
-        case .open?: return "Log in in the window below, then press Done."
+        case .open?:
+            return page == .register
+                ? "Complete registration in the window below, then press Done."
+                : "Log in in the window below, then press Done."
         case .closed?: return "The login window closed. Press Done to check the session."
         case .failed?: return "Remote login failed. Press Done to check the session."
         case .none?: return "No login window is open. Press Done to check the session."
@@ -90,11 +131,13 @@ struct LoginSheet: View {
     var body: some View {
         VStack(alignment: .leading) {
             HStack {
-                Text("Log In: \(account.id)").font(.headline)
+                Text("\(title): \(account.label)").font(.headline)
                 Spacer()
                 Button("Done") { action.run { try await finish() } }.disabled(action.busy)
             }
             Text(statusText).foregroundStyle(.secondary)
+            Text("Email and password are filled in automatically. Complete the verification and submit.")
+                .font(.caption).foregroundStyle(.secondary)
             ActionNotice(action: action)
             if let note { Text(note).foregroundStyle(.red) }
             if let loginURL {
@@ -122,7 +165,7 @@ struct LoginSheet: View {
     }
 
     private func start() async throws {
-        let login = try await client.startAccountLogin(account.id)
+        let login = try await client.startAccountLogin(account.id, page: page)
         started = true
         phase = login.state
         path = login.path

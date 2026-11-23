@@ -56,21 +56,30 @@ private final class StubProtocol: URLProtocol {
             body = ""
         case ("POST", "/fixture/accounts"):
             let payload = bodyObject()
-            let valid = authorized && payload?["id"] as? String == "acc-1" && payload?["persona"] as? String == "windows" &&
-                payload?["proxy_url"] as? String == "socks5h://user:pass@proxy.example:1080" && payload?["timezone"] as? String == "UTC"
+            let valid = authorized && keys(payload) == ["email", "password", "proxy_url"] &&
+                payload?["email"] as? String == "user@example.com" && payload?["password"] as? String == "fixture-password" &&
+                payload?["proxy_url"] as? String == "socks5h://user:pass@proxy.example:1080"
             status = valid ? 201 : 422
             body = valid ? accountFixture : #"{"detail":"Invalid account"}"#
         case ("PUT", "/fixture/accounts/acc-1"):
             let payload = bodyObject()
-            let valid = authorized && payload?["proxy_ref"] as? String == "proxy-1" && payload?["status"] as? String == "paused"
-            status = valid ? 200 : 422
-            body = valid ? accountFixture.replacingOccurrences(of: #""status":"active""#, with: #""status":"paused""#) : "{}"
+            let pause = keys(payload) == ["status"] && payload?["status"] as? String == "paused"
+            let edit = keys(payload) == ["password", "proxy_url"] && payload?["password"] as? String == "new-fixture-password" &&
+                payload?["proxy_url"] as? String == "socks5h://user:pass@proxy.example:1081"
+            status = authorized && (pause || edit) ? 200 : 422
+            body = pause ? accountFixture.replacingOccurrences(of: #""status":"active""#, with: #""status":"paused""#)
+                : edit ? accountFixture.replacingOccurrences(of: #""proxy_url":"socks5h://user:pass@proxy.example:1080""#,
+                                                             with: #""proxy_url":"socks5h://user:pass@proxy.example:1081""#)
+                : "{}"
         case ("DELETE", "/fixture/accounts/acc-1") where authorized:
             status = 204
             body = ""
         case ("POST", "/fixture/accounts/acc-1/login") where authorized:
-            status = 201
-            body = #"{"state":"starting","path":"/login-view/ticket-1/vnc.html?autoconnect=1"}"#
+            let payload = bodyObject()
+            let page = payload?["page"] as? String
+            let valid = keys(payload) == ["page"] && (page == "login" || page == "register")
+            status = valid ? 201 : 422
+            body = valid ? #"{"state":"starting","path":"/login-view/ticket-1/vnc.html?autoconnect=1"}"# : #"{"detail":"Invalid page"}"#
         case ("GET", "/fixture/accounts/acc-1/login") where authorized:
             status = 200
             body = #"{"state":"open","path":"/login-view/ticket-1/vnc.html?autoconnect=1"}"#
@@ -107,9 +116,13 @@ private final class StubProtocol: URLProtocol {
         } else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
+
+    private func keys(_ payload: [String: Any]?) -> Set<String> {
+        Set((payload ?? [:]).keys)
+    }
 }
 
-private let accountFixture = #"{"id":"acc-1","proxy_ref":"proxy-1","status":"active","pause_reason":null,"available_at":0,"failures":0,"managed":true,"timezone":"UTC","persona":"windows"}"#
+private let accountFixture = #"{"id":"acc-1","email":"user@example.com","password":"fixture-password","proxy_url":"socks5h://user:pass@proxy.example:1080","status":"active","pause_reason":null,"available_at":0,"failures":0,"managed":true,"timezone":"UTC","persona":"windows"}"#
 
 private let eventFixture = """
     {"id":7,"kind":"transfer","rule_id":3,"coin_id":"ABC","level":"normal","push":true,
@@ -184,17 +197,25 @@ final class APIClientTests: XCTestCase {
 
     func testAccountManagementRequests() async throws {
         let api = try client()
-        let created = try await api.createAccount(AccountInput(id: "acc-1", proxyUrl: "socks5h://user:pass@proxy.example:1080",
-                                                               timezone: "UTC", persona: "windows"))
+        let created = try await api.createAccount(AccountInput(email: "user@example.com", password: "fixture-password",
+                                                               proxyUrl: "socks5h://user:pass@proxy.example:1080"))
         XCTAssertEqual(created.managed, true)
+        XCTAssertEqual(created.label, "user@example.com")
+        XCTAssertEqual(created.password, "fixture-password")
+        XCTAssertEqual(created.proxyUrl, "socks5h://user:pass@proxy.example:1080")
         XCTAssertEqual(created.timezone, "UTC")
         XCTAssertEqual(created.persona, "windows")
-        let paused = try await api.saveAccount("acc-1", update: AccountUpdate(proxyRef: "proxy-1", status: .paused))
+        let paused = try await api.saveAccount("acc-1", update: AccountUpdate(status: .paused))
         XCTAssertEqual(paused.status, .paused)
+        let edited = try await api.saveAccount("acc-1", update: AccountUpdate(
+            proxyUrl: "socks5h://user:pass@proxy.example:1081", password: "new-fixture-password"))
+        XCTAssertEqual(edited.proxyUrl, "socks5h://user:pass@proxy.example:1081")
         try await api.deleteAccount("acc-1")
         let login = try await api.startAccountLogin("acc-1")
         XCTAssertEqual(login.state, .starting)
         XCTAssertEqual(login.path, "/login-view/ticket-1/vnc.html?autoconnect=1")
+        let register = try await api.startAccountLogin("acc-1", page: .register)
+        XCTAssertEqual(register.state, .starting)
         let state = try await api.accountLoginState("acc-1")
         XCTAssertEqual(state.state, .open)
         let finished = try await api.finishAccountLogin("acc-1")
@@ -205,12 +226,17 @@ final class APIClientTests: XCTestCase {
         let legacy = #"{"id":"old","proxy_ref":"p","status":"paused","pause_reason":"AuthRequired","available_at":12.5,"failures":3}"#
         let old = try APIClient.decoder().decode(Account.self, from: Data(legacy.utf8))
         XCTAssertEqual(old.id, "old")
+        XCTAssertEqual(old.label, "old")
         XCTAssertEqual(old.status, .paused)
+        XCTAssertNil(old.email)
+        XCTAssertNil(old.password)
+        XCTAssertNil(old.proxyUrl)
         XCTAssertNil(old.managed)
         XCTAssertNil(old.timezone)
         XCTAssertNil(old.persona)
         let current = try APIClient.decoder().decode(Account.self, from: Data(accountFixture.utf8))
         XCTAssertEqual(current.managed, true)
+        XCTAssertEqual(current.label, "user@example.com")
         XCTAssertEqual(current.persona, "windows")
         let idle = try APIClient.decoder().decode(AccountLogin.self, from: Data(#"{"state":"none","path":null}"#.utf8))
         XCTAssertEqual(idle.state, .none)

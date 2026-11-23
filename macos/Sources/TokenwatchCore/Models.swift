@@ -185,7 +185,9 @@ public struct Exclusion: Codable, Sendable, Identifiable {
 public struct Account: Codable, Sendable, Identifiable {
     public enum Status: String, Codable, Sendable { case active, paused }
     public let id: String
-    public let proxyRef: String
+    public let email: String?
+    public let password: String?
+    public let proxyUrl: String?
     public let status: Status
     public let pauseReason: String?
     public let availableAt: Double
@@ -193,31 +195,35 @@ public struct Account: Codable, Sendable, Identifiable {
     public let managed: Bool?
     public let timezone: String?
     public let persona: String?
+
+    public var label: String { email ?? id }
 }
 
 public struct AccountInput: Encodable, Sendable {
-    public let id: String
+    public let email: String
+    public let password: String
     public let proxyUrl: String
-    public let timezone: String
-    public let persona: String
 
-    public init(id: String, proxyUrl: String, timezone: String, persona: String) {
-        self.id = id
+    public init(email: String, password: String, proxyUrl: String) {
+        self.email = email
+        self.password = password
         self.proxyUrl = proxyUrl
-        self.timezone = timezone
-        self.persona = persona
     }
 }
 
 public struct AccountUpdate: Encodable, Sendable {
-    public let proxyRef: String
-    public let status: Account.Status
+    public let status: Account.Status?
+    public let proxyUrl: String?
+    public let password: String?
 
-    public init(proxyRef: String, status: Account.Status) {
-        self.proxyRef = proxyRef
+    public init(status: Account.Status? = nil, proxyUrl: String? = nil, password: String? = nil) {
         self.status = status
+        self.proxyUrl = proxyUrl
+        self.password = password
     }
 }
+
+public enum LoginPage: String, Codable, Sendable, CaseIterable { case login, register }
 
 public struct AccountLogin: Codable, Sendable {
     public enum Phase: String, Codable, Sendable { case none, starting, open, closed, failed }
