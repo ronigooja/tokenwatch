@@ -232,7 +232,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 enum SectionID: String, CaseIterable, Identifiable {
     case events = "Events", transfers = "Transfers", snapshots = "Snapshots", curves = "Entity Curves"
-    case subscriptions = "Subscriptions", jobs = "Jobs", rules = "Rules", accounts = "Accounts", settings = "Settings"
+    case subscriptions = "Subscriptions", coins = "Coins", jobs = "Jobs", rules = "Rules", catalog = "Catalog Rules"
+    case accounts = "Accounts", settings = "Settings"
     var id: Self { self }
     var icon: String {
         switch self {
@@ -241,8 +242,10 @@ enum SectionID: String, CaseIterable, Identifiable {
         case .snapshots: return "camera"
         case .curves: return "chart.xyaxis.line"
         case .subscriptions: return "eye"
+        case .coins: return "dollarsign.circle"
         case .jobs: return "list.bullet.rectangle"
         case .rules: return "slider.horizontal.3"
+        case .catalog: return "books.vertical"
         case .accounts: return "person.2"
         case .settings: return "gear"
         }
@@ -338,8 +341,10 @@ private struct MainView: View {
         case .snapshots: SnapshotsView(client: client)
         case .curves: CurvesView(client: client)
         case .subscriptions: SubscriptionsView(client: client)
+        case .coins: CoinsView(client: client)
         case .jobs: JobsView(client: client)
         case .rules: RulesView(client: client)
+        case .catalog: CatalogRulesView(client: client)
         case .accounts: AccountsView(client: client)
         case .settings: EmptyView()
         }

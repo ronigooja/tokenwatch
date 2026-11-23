@@ -269,7 +269,7 @@ struct CurvesView: View {
                 .font(.caption).foregroundStyle(.secondary)
             ActionNotice(action: action)
             if let curve, !points.isEmpty {
-                Text("Coin: \(curve.coinId)").font(.headline)
+                Text("Coin: \(coinLabel(curve.coinId, coins))").font(.headline)
                 let seriesLabels = labels
                 Chart(points) { entry in
                     let value = inUSD ? entry.point.balanceUsd : entry.point.balanceUnit

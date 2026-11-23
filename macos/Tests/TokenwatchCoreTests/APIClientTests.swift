@@ -20,7 +20,8 @@ private final class StubProtocol: URLProtocol {
             let expected: Set<String> = ["coin_id", "start", "end", "min_usd", "max_usd", "direction", "entity",
                                          "address", "chain", "txhash", "offset", "limit"]
             let valid = authorized && names == expected && query.contains(.init(name: "entity", value: "A+B & C")) &&
-                url.absoluteString.contains("A%2BB") && query.contains(.init(name: "offset", value: "100"))
+                url.absoluteString.contains("A%2BB") && query.contains(.init(name: "offset", value: "100")) &&
+                query.contains(.init(name: "coin_id", value: fixtureCoinID))
             status = valid ? 200 : 422
             body = valid ? """
                 [{"id":"tr-1","coin_ids":["ABC"],"chain":"example-chain","direction":"entity_to_entity",
@@ -100,6 +101,50 @@ private final class StubProtocol: URLProtocol {
         case ("DELETE", "/fixture/accounts/user+a@example.com") where authorized && encodedPath == emailAccountPath:
             status = 204
             body = ""
+        case ("GET", "/fixture/coins"):
+            let valid = authorized && query == [.init(name: "status", value: "no_match")]
+            status = valid ? 200 : 422
+            body = valid ? "[\(coinFixture)]" : #"{"detail":"Invalid coin filter"}"#
+        case ("GET", "/fixture/coins/\(fixtureCoinID)") where authorized && encodedPath == coinPath("coins", fixtureCoinID):
+            status = 200
+            body = coinFixture
+        case ("GET", "/fixture/coins/native:bitcoin/mapping") where authorized &&
+            encodedPath == coinPath("coins", "native:bitcoin", "mapping"):
+            status = 404
+            body = #"{"detail":"Resource not found"}"#
+        case ("PUT", "/fixture/coins/native:bitcoin/mapping") where authorized &&
+            encodedPath == coinPath("coins", "native:bitcoin", "mapping"):
+            let valid = keys(bodyObject()) == ["pricing_id"] && bodyObject()?["pricing_id"] as? String == "bitcoin-fixture"
+            status = valid ? 200 : 422
+            body = valid ? #"{"pricing_id":"bitcoin-fixture"}"# : #"{"detail":"Invalid mapping"}"#
+        case ("DELETE", "/fixture/coins/native:bitcoin/mapping") where authorized &&
+            encodedPath == coinPath("coins", "native:bitcoin", "mapping"):
+            status = 204
+            body = ""
+        case ("PUT", "/fixture/exclusions/\(fixtureCoinID)") where authorized && encodedPath == coinPath("exclusions", fixtureCoinID):
+            let valid = keys(bodyObject()) == ["reason"] && bodyObject()?["reason"] as? String == "fixture reason"
+            status = valid ? 200 : 422
+            body = valid ? #"{"coin_id":"\#(fixtureCoinID)","reason":"fixture reason"}"# : #"{"detail":"Invalid exclusion"}"#
+        case ("DELETE", "/fixture/exclusions/\(fixtureCoinID)") where authorized && encodedPath == coinPath("exclusions", fixtureCoinID):
+            status = 204
+            body = ""
+        case ("PUT", "/fixture/coin-catalog/futures-mappings/1000SHIB") where authorized:
+            let valid = bodyObject()?["symbol"] as? String == "SHIB"
+            status = valid ? 200 : 422
+            body = valid ? #"{"symbol":"SHIB","base":"1000SHIB"}"# : #"{"detail":"Invalid mapping"}"#
+        case ("DELETE", "/fixture/coin-catalog/futures-mappings/1000SHIB") where authorized:
+            status = 204
+            body = ""
+        case ("PUT", "/fixture/coin-catalog/exclusion-rules/tag/bStocks") where authorized:
+            let valid = keys(bodyObject()) == ["reason"] && bodyObject()?["reason"] as? String == "fixture reason"
+            status = valid ? 200 : 422
+            body = valid ? #"{"kind":"tag","value":"bStocks","reason":"fixture reason"}"# : #"{"detail":"Invalid rule"}"#
+        case ("DELETE", "/fixture/coin-catalog/exclusion-rules/tag/bStocks") where authorized:
+            status = 204
+            body = ""
+        case ("GET", "/fixture/coin-catalog/chains") where authorized:
+            status = 200
+            body = #"[{"alpha_chain_id":"56","arkham_chains":["bsc","ethereum"],"conflict":true}]"#
         default:
             status = 404
             body = #"{"detail":"No stub route"}"#
@@ -138,6 +183,14 @@ private final class StubProtocol: URLProtocol {
 
 private let emailAccountPath = "/fixture/accounts/user+a@example.com"
 private let emailLoginPath = emailAccountPath + "/login"
+private let fixtureCoinID = "alpha:56:0x1f9840a85d5af5bf1d1762f925bdaddc4201f984"
+
+/// Expected percent-encoded request path below the fixture base; `:` and `~` are literal path characters.
+private func coinPath(_ parts: String...) -> String {
+    "/fixture/" + parts.joined(separator: "/")
+}
+
+private let coinFixture = #"{"id":"\#(fixtureCoinID)","symbol":"FOO","pricing_id":null,"status":"no_match","reason":null,"sources":["alpha"],"deployments":[{"feed":"alpha","chain":"BSC","address":"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984","deposit_enabled":true,"withdraw_enabled":null}],"matched_chains":[]}"#
 
 private let accountFixture = #"{"id":"acc-1","email":"user@example.com","password":"fixture-password","proxy_url":"socks5h://user:pass@proxy.example:1080","status":"active","pause_reason":null,"available_at":0,"failures":0,"managed":true,"timezone":"UTC","persona":"windows"}"#
 
@@ -158,7 +211,7 @@ final class APIClientTests: XCTestCase {
     func testTransferRequestAndDecode() async throws {
         let api = try client()
         var filter = TransferFilter()
-        filter.coinId = "ABC"
+        filter.coinId = fixtureCoinID
         filter.start = Date(timeIntervalSince1970: 1)
         filter.end = Date(timeIntervalSince1970: 2)
         filter.minUsd = 1; filter.maxUsd = 300
@@ -285,6 +338,93 @@ final class APIClientTests: XCTestCase {
         let idle = try APIClient.decoder().decode(AccountLogin.self, from: Data(#"{"state":"none","path":null}"#.utf8))
         XCTAssertEqual(idle.state, .none)
         XCTAssertNil(idle.path)
+    }
+
+    func testCoinRequestsKeepCoinRefCharacters() async throws {
+        let api = try client()
+        let coin = try await api.coin(fixtureCoinID)
+        XCTAssertEqual(coin.id, fixtureCoinID)
+        XCTAssertEqual(coin.status, .noMatch)
+        XCTAssertEqual(coin.deployments.first?.feed, .alpha)
+        let unmapped = try await api.coinMapping("native:bitcoin")
+        XCTAssertNil(unmapped)
+        let mapping = try await api.saveCoinMapping("native:bitcoin", pricingId: "bitcoin-fixture")
+        XCTAssertEqual(mapping.pricingId, "bitcoin-fixture")
+        try await api.deleteCoinMapping("native:bitcoin")
+        let exclusion = try await api.saveExclusion(fixtureCoinID, reason: "fixture reason")
+        XCTAssertEqual(exclusion.coinId, fixtureCoinID)
+        try await api.deleteExclusion(fixtureCoinID)
+        let rows = try await api.coins(.noMatch)
+        XCTAssertEqual(rows.first?.symbol, "FOO")
+    }
+
+    func testCoinIDPathsRejectUnsafeValues() async throws {
+        let api = try client()
+        let ids = ["a/b", "..", "a..b", "a b", "a\\b", ".hidden", "a\tb", ":leading", String(repeating: "a", count: 257)]
+        for id in ids {
+            do {
+                _ = try await api.coin(id)
+                XCTFail("Expected \(id) to be rejected")
+            } catch APIError.invalidPath {
+            }
+        }
+    }
+
+    func testCatalogRequests() async throws {
+        let api = try client()
+        let mapping = try await api.saveFuturesMapping("1000SHIB", symbol: "SHIB")
+        XCTAssertEqual(mapping.base, "1000SHIB")
+        try await api.deleteFuturesMapping("1000SHIB")
+        let rule = try await api.saveCatalogExclusion(.tag, value: "bStocks", reason: "fixture reason")
+        XCTAssertEqual(rule.kind, .tag)
+        XCTAssertEqual(rule.id, "tag:bStocks")
+        try await api.deleteCatalogExclusion(.tag, value: "bStocks")
+        let chains = try await api.chainObservations()
+        XCTAssertEqual(chains.first?.conflict, true)
+        XCTAssertEqual(chains.first?.arkhamChains, ["bsc", "ethereum"])
+    }
+
+    func testCoinDecodesCurrentShapeAndUnknownStatus() throws {
+        let coin = try APIClient.decoder().decode(Coin.self, from: Data(coinFixture.utf8))
+        XCTAssertEqual(coin.status, .noMatch)
+        XCTAssertNil(coin.pricingId)
+        XCTAssertNil(coin.reason)
+        XCTAssertNil(coin.deployments.first?.withdrawEnabled)
+        XCTAssertEqual(coin.deployments.first?.depositEnabled, true)
+        XCTAssertEqual(coin.chains, ["BSC"])
+        let future = #"{"id":"native:bitcoin","symbol":"BTC","pricing_id":"bitcoin","status":"supported","reason":null,"sources":["spot"],"deployments":[{"feed":"spot","chain":"bitcoin","address":null,"deposit_enabled":null,"withdraw_enabled":null}],"matched_chains":[]}"#
+        let native = try APIClient.decoder().decode(Coin.self, from: Data(future.utf8))
+        XCTAssertEqual(native.status, .supported)
+        XCTAssertEqual(native.pricingId, "bitcoin")
+        XCTAssertEqual(native.chains, ["bitcoin"])
+        XCTAssertEqual(native.status.label, "Supported")
+        let unknown = #"{"id":"native:x","symbol":"X","pricing_id":null,"status":"brand_new_state","reason":null,"sources":[],"deployments":[],"matched_chains":[]}"#
+        let decoded = try APIClient.decoder().decode(Coin.self, from: Data(unknown.utf8))
+        XCTAssertEqual(decoded.status, .unknown("brand_new_state"))
+        XCTAssertEqual(decoded.status.rawValue, "brand_new_state")
+        XCTAssertEqual(decoded.status.label, "brand_new_state")
+    }
+
+    func testJobDecodesLegacyAndNullableAccount() throws {
+        let legacy = #"{"id":4,"kind":"transfers","account_id":"acc-1","coin_id":"native:bitcoin","options":{"balance_min":null},"interval_seconds":60,"enabled":true,"next_run":0,"wait_reason":null}"#
+        let job = try APIClient.decoder().decode(Job.self, from: Data(legacy.utf8))
+        XCTAssertEqual(job.accountId, "acc-1")
+        XCTAssertNil(job.waitReason)
+        let anyAccount = #"{"id":5,"kind":"daily","account_id":null,"coin_id":null,"options":{"balance_min":100},"interval_seconds":3600,"enabled":true,"next_run":1700000000.0,"wait_reason":"No active account"}"#
+        let pooled = try APIClient.decoder().decode(Job.self, from: Data(anyAccount.utf8))
+        XCTAssertNil(pooled.accountId)
+        XCTAssertEqual(pooled.waitReason, "No active account")
+    }
+
+    func testJobInputEncodesNullAccount() throws {
+        let input = JobInput(kind: .coinCatalog, accountId: nil, coinId: nil, options: JobOptions(balanceMin: nil),
+                             intervalSeconds: 3600, enabled: true)
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(input)) as? [String: Any])
+        XCTAssertTrue(object["account_id"] is NSNull)
+        XCTAssertNil(object["coin_id"])
+        XCTAssertEqual(object["kind"] as? String, "coin_catalog")
     }
 
     func testAccountDecodesCachedSessionFields() throws {

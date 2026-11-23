@@ -53,13 +53,127 @@ public enum JobKind: String, Codable, Sendable, CaseIterable {
 }
 public enum RuleSource: String, Codable, Sendable, CaseIterable { case transfer, balanceDiff = "balance_diff" }
 
+public enum CoinStatus: Hashable, Sendable, Codable {
+    case supported, noMatch, ambiguous, unsupported, needsManualMapping, unknownOnchain, excluded, noFutures
+    case pendingMatch, pendingSupport
+    case unknown(String)
+
+    public static let known: [CoinStatus] = [
+        .supported, .noMatch, .ambiguous, .unsupported, .needsManualMapping, .unknownOnchain,
+        .excluded, .noFutures, .pendingMatch, .pendingSupport,
+    ]
+
+    public var rawValue: String {
+        switch self {
+        case .supported: return "supported"
+        case .noMatch: return "no_match"
+        case .ambiguous: return "ambiguous"
+        case .unsupported: return "unsupported"
+        case .needsManualMapping: return "needs_manual_mapping"
+        case .unknownOnchain: return "unknown_onchain"
+        case .excluded: return "excluded"
+        case .noFutures: return "no_futures"
+        case .pendingMatch: return "pending_match"
+        case .pendingSupport: return "pending_support"
+        case .unknown(let value): return value
+        }
+    }
+
+    public var label: String {
+        switch self {
+        case .supported: return "Supported"
+        case .noMatch: return "No match"
+        case .ambiguous: return "Ambiguous"
+        case .unsupported: return "Unsupported"
+        case .needsManualMapping: return "Needs mapping"
+        case .unknownOnchain: return "Unknown on-chain"
+        case .excluded: return "Excluded"
+        case .noFutures: return "No futures"
+        case .pendingMatch: return "Pending match"
+        case .pendingSupport: return "Pending support"
+        case .unknown(let value): return value
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        self = Self.known.first(where: { $0.rawValue == value }) ?? .unknown(value)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+public enum CoinFeed: String, Codable, Sendable, CaseIterable {
+    case spot, alpha
+
+    public var label: String { self == .spot ? "Spot" : "Alpha" }
+}
+
+public struct Deployment: Codable, Sendable, Hashable {
+    public let feed: CoinFeed
+    public let chain: String
+    public let address: String?
+    public let depositEnabled: Bool?
+    public let withdrawEnabled: Bool?
+}
+
 public struct Coin: Codable, Sendable, Identifiable {
     public let id: String
     public let symbol: String
     public let pricingId: String?
-    public let verified: Bool
-    public let exclusionReason: String?
-    public let sources: [[String: JSONValue]]
+    public let status: CoinStatus
+    public let reason: String?
+    public let sources: [CoinFeed]
+    public let deployments: [Deployment]
+    public let matchedChains: [String]
+
+    public var chains: [String] {
+        if !matchedChains.isEmpty { return matchedChains }
+        var seen = Set<String>()
+        return deployments.map(\.chain).filter { seen.insert($0).inserted }
+    }
+}
+
+public struct CoinMapping: Codable, Sendable {
+    public let pricingId: String
+}
+
+public enum CatalogState: String, Codable, Sendable { case validated, unknown }
+
+public struct CatalogStatus: Codable, Sendable {
+    public let status: CatalogState
+    public let attemptedAt: Double?
+    public let refreshedAt: Double?
+    public let error: String?
+}
+
+public enum CatalogRuleKind: String, Codable, Sendable, CaseIterable { case flag, tag }
+
+public struct CatalogExclusion: Codable, Sendable, Identifiable {
+    public var id: String { "\(kind.rawValue):\(value)" }
+    public let kind: CatalogRuleKind
+    public let value: String
+    public let reason: String
+}
+
+public struct FuturesMapping: Codable, Sendable, Identifiable {
+    public var id: String { base }
+    public let base: String
+    public let symbol: String
+}
+
+public struct FuturesMappingInput: Encodable, Sendable {
+    public let symbol: String
+}
+
+public struct ChainObservation: Codable, Sendable, Identifiable {
+    public var id: String { alphaChainId }
+    public let alphaChainId: String
+    public let arkhamChains: [String]
+    public let conflict: Bool
 }
 
 public struct Event: Codable, Sendable, Identifiable {
@@ -179,8 +293,9 @@ public struct Exclusion: Codable, Sendable, Identifiable {
     public var id: String { coinId }
     public let coinId: String
     public let reason: String
-    struct Input: Encodable { let reason: String }
 }
+
+struct ReasonInput: Encodable, Sendable { let reason: String }
 
 public struct Account: Codable, Sendable, Identifiable {
     public enum Status: String, Codable, Sendable { case active, paused }
@@ -251,13 +366,13 @@ public struct JobOptions: Codable, Sendable {
 
 public struct JobInput: Codable, Sendable {
     public let kind: JobKind
-    public let accountId: String
+    public let accountId: String?
     public let coinId: String?
     public let options: JobOptions
     public let intervalSeconds: Double
     public let enabled: Bool
 
-    public init(kind: JobKind, accountId: String, coinId: String?, options: JobOptions,
+    public init(kind: JobKind, accountId: String?, coinId: String?, options: JobOptions,
                 intervalSeconds: Double, enabled: Bool) {
         self.kind = kind
         self.accountId = accountId
@@ -266,17 +381,30 @@ public struct JobInput: Codable, Sendable {
         self.intervalSeconds = intervalSeconds
         self.enabled = enabled
     }
+
+    private enum CodingKeys: String, CodingKey { case kind, accountId, coinId, options, intervalSeconds, enabled }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(accountId, forKey: .accountId)
+        try container.encodeIfPresent(coinId, forKey: .coinId)
+        try container.encode(options, forKey: .options)
+        try container.encode(intervalSeconds, forKey: .intervalSeconds)
+        try container.encode(enabled, forKey: .enabled)
+    }
 }
 
 public struct Job: Codable, Sendable, Identifiable {
     public let id: Int
     public let kind: JobKind
-    public let accountId: String
+    public let accountId: String?
     public let coinId: String?
     public let options: JobOptions
     public let intervalSeconds: Double
     public let enabled: Bool
     public let nextRun: Double
+    public let waitReason: String?
 }
 
 public struct RuleConditions: Codable, Sendable {

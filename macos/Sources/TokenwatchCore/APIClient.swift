@@ -63,12 +63,23 @@ public struct APIClient: Sendable {
         return decoder
     }
 
+    private static func isResourceID(_ part: String) -> Bool {
+        part.range(of: #"^[A-Za-z0-9][A-Za-z0-9_@+.-]{0,127}$"#, options: .regularExpression) != nil &&
+            !part.contains("..") && !part.contains(where: \.isWhitespace)
+    }
+
+    private static func isCoinID(_ id: String) -> Bool {
+        id.count <= 256 && !id.contains("..") && !id.contains(where: \.isWhitespace) &&
+            id.range(of: #"^[A-Za-z0-9][A-Za-z0-9_@+.~:-]*$"#, options: .regularExpression) != nil
+    }
+
+    /// `coinAt` is the index of the path part that holds a coin ID.
     private func request(_ path: [String], method: String = "GET", query: [URLQueryItem] = [],
-                         websocket: Bool = false) throws -> URLRequest {
+                         websocket: Bool = false, coinAt: Int? = nil) throws -> URLRequest {
         var url = server
-        for part in path {
-            guard part.range(of: #"^[A-Za-z0-9][A-Za-z0-9_@+.-]{0,127}$"#, options: .regularExpression) != nil,
-                  !part.contains(".."), !part.contains(where: \.isWhitespace) else { throw APIError.invalidPath }
+        for (index, part) in path.enumerated() {
+            let valid = index == coinAt ? Self.isCoinID(part) : Self.isResourceID(part)
+            guard valid else { throw APIError.invalidPath }
             url.appendPathComponent(part)
         }
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { throw APIError.invalidServer }
@@ -85,8 +96,9 @@ public struct APIClient: Sendable {
         return request
     }
 
-    private func request<Body: Encodable>(_ path: [String], method: String, body: Body) throws -> URLRequest {
-        var result = try request(path, method: method)
+    private func request<Body: Encodable>(_ path: [String], method: String, body: Body,
+                                          coinAt: Int? = nil) throws -> URLRequest {
+        var result = try request(path, method: method, coinAt: coinAt)
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         result.httpBody = try encoder.encode(body)
@@ -121,7 +133,62 @@ public struct APIClient: Sendable {
         return try Self.decoder().decode(T.self, from: data)
     }
 
-    public func coins() async throws -> [Coin] { try await decode(request(["coins"])) }
+    public func coins(_ status: CoinStatus? = nil) async throws -> [Coin] {
+        let query: [URLQueryItem] = status.map { [URLQueryItem(name: "status", value: $0.rawValue)] } ?? []
+        return try await decode(request(["coins"], query: query))
+    }
+
+    public func coin(_ id: String) async throws -> Coin { try await decode(request(["coins", id], coinAt: 1)) }
+
+    /// Returns nil when no manual Arkham coin number is set (HTTP 404).
+    public func coinMapping(_ id: String) async throws -> CoinMapping? {
+        do {
+            let mapping: CoinMapping = try await decode(request(["coins", id, "mapping"], coinAt: 1))
+            return mapping
+        } catch APIError.http(404, _) {
+            return nil
+        }
+    }
+
+    public func saveCoinMapping(_ id: String, pricingId: String) async throws -> CoinMapping {
+        try await decode(request(["coins", id, "mapping"], method: "PUT", body: CoinMapping(pricingId: pricingId), coinAt: 1))
+    }
+
+    public func deleteCoinMapping(_ id: String) async throws {
+        _ = try await send(request(["coins", id, "mapping"], method: "DELETE", coinAt: 1))
+    }
+
+    public func catalogStatus() async throws -> CatalogStatus { try await decode(request(["coin-catalog"])) }
+
+    public func chainObservations() async throws -> [ChainObservation] {
+        try await decode(request(["coin-catalog", "chains"]))
+    }
+
+    public func futuresMappings() async throws -> [FuturesMapping] {
+        try await decode(request(["coin-catalog", "futures-mappings"]))
+    }
+
+    public func saveFuturesMapping(_ base: String, symbol: String) async throws -> FuturesMapping {
+        try await decode(request(["coin-catalog", "futures-mappings", base], method: "PUT",
+                                 body: FuturesMappingInput(symbol: symbol)))
+    }
+
+    public func deleteFuturesMapping(_ base: String) async throws {
+        _ = try await send(request(["coin-catalog", "futures-mappings", base], method: "DELETE"))
+    }
+
+    public func catalogExclusions() async throws -> [CatalogExclusion] {
+        try await decode(request(["coin-catalog", "exclusion-rules"]))
+    }
+
+    public func saveCatalogExclusion(_ kind: CatalogRuleKind, value: String, reason: String) async throws -> CatalogExclusion {
+        try await decode(request(["coin-catalog", "exclusion-rules", kind.rawValue, value], method: "PUT",
+                                 body: ReasonInput(reason: reason)))
+    }
+
+    public func deleteCatalogExclusion(_ kind: CatalogRuleKind, value: String) async throws {
+        _ = try await send(request(["coin-catalog", "exclusion-rules", kind.rawValue, value], method: "DELETE"))
+    }
     public func accounts() async throws -> [Account] { try await decode(request(["accounts"])) }
     public func accountSession(_ id: String) async throws -> AccountSession {
         try await decode(request(["accounts", id, "session"]))
@@ -192,11 +259,11 @@ public struct APIClient: Sendable {
     public func subscriptions() async throws -> [Subscription] { try await decode(request(["subscriptions"])) }
 
     public func saveSubscription(_ id: String, enabled: Bool) async throws -> Subscription {
-        try await decode(request(["subscriptions", id], method: "PUT", body: Subscription.Input(enabled: enabled)))
+        try await decode(request(["subscriptions", id], method: "PUT", body: Subscription.Input(enabled: enabled), coinAt: 1))
     }
 
     public func deleteSubscription(_ id: String) async throws {
-        _ = try await send(request(["subscriptions", id], method: "DELETE"))
+        _ = try await send(request(["subscriptions", id], method: "DELETE", coinAt: 1))
     }
 
     public func jobs() async throws -> [Job] { try await decode(request(["jobs"])) }
@@ -210,12 +277,14 @@ public struct APIClient: Sendable {
 
     public func exclusions() async throws -> [Exclusion] { try await decode(request(["exclusions"])) }
 
+    public func exclusion(_ id: String) async throws -> Exclusion { try await decode(request(["exclusions", id], coinAt: 1)) }
+
     public func saveExclusion(_ id: String, reason: String) async throws -> Exclusion {
-        try await decode(request(["exclusions", id], method: "PUT", body: Exclusion.Input(reason: reason)))
+        try await decode(request(["exclusions", id], method: "PUT", body: ReasonInput(reason: reason), coinAt: 1))
     }
 
     public func deleteExclusion(_ id: String) async throws {
-        _ = try await send(request(["exclusions", id], method: "DELETE"))
+        _ = try await send(request(["exclusions", id], method: "DELETE", coinAt: 1))
     }
 
     public func rules() async throws -> [Rule] { try await decode(request(["rules"])) }

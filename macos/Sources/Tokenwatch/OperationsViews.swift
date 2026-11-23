@@ -19,10 +19,11 @@ struct CoinPicker: View {
 struct AccountPicker: View {
     let accounts: [Account]
     @Binding var selection: String
+    var anyAccountLabel: String? = nil
 
     var body: some View {
         Picker("Account", selection: $selection) {
-            Text("Choose…").tag("")
+            Text(anyAccountLabel ?? "Choose…").tag("")
             if !selection.isEmpty, !accounts.contains(where: { $0.id == selection }) { Text(selection).tag(selection) }
             ForEach(accounts) { account in Text("\(account.id) · \(account.status.rawValue)").tag(account.id) }
         }
@@ -61,7 +62,7 @@ struct SubscriptionsView: View {
             }.disabled(action.busy)
             ActionNotice(action: action)
             Table(subscriptions, selection: $selection) {
-                TableColumn("Coin") { (row: TokenwatchCore.Subscription) in Text(row.coinId) }
+                TableColumn("Coin") { (row: TokenwatchCore.Subscription) in Text(coinLabel(row.coinId, coins)).help(row.coinId) }
                 TableColumn("Subscription") { (row: TokenwatchCore.Subscription) in Text(row.enabled ? "Enabled" : "Disabled") }
                 TableColumn("Job Frequency (Configured)") { (row: TokenwatchCore.Subscription) in Text(frequency(row.coinId)) }
             }
@@ -110,7 +111,7 @@ struct SubscriptionsView: View {
 
     private func frequency(_ id: String) -> String {
         let matching = jobs.filter { $0.kind == .transfers && $0.coinId == id }
-        let values = matching.map { "\($0.accountId): \(number($0.intervalSeconds)) s" + ($0.enabled ? "" : " (off)") }
+        let values = matching.map { "\($0.accountId ?? "Any account"): \(number($0.intervalSeconds)) s" + ($0.enabled ? "" : " (off)") }
         return values.isEmpty ? "No transfer job" : values.joined(separator: ", ")
     }
 
@@ -180,14 +181,15 @@ struct JobsView: View {
     private var jobsTable: some View {
         Table(jobs, selection: $selectedJob) {
             TableColumn("Job") { (job: Job) in Text(job.kind.rawValue) }
-            TableColumn("Account") { (job: Job) in Text(job.accountId) }
-            TableColumn("Coin") { (job: Job) in Text(job.coinId ?? "—") }
+            TableColumn("Account") { (job: Job) in Text(job.accountId ?? "Any account") }
+            TableColumn("Coin") { (job: Job) in Text(job.coinId.map { coinLabel($0, coins) } ?? "—") }
             TableColumn("Frequency (s)") { (job: Job) in Text(number(job.intervalSeconds)) }
             TableColumn("Minimum USD") { (job: Job) in Text(usd(job.options.balanceMin)) }
             TableColumn("Enabled") { (job: Job) in Text(job.enabled ? "Yes" : "No") }
             TableColumn("Next Run") { (job: Job) in
                 Text(job.nextRun > 0 ? Date(timeIntervalSince1970: job.nextRun).formatted() : "—")
             }
+            TableColumn("Wait") { (job: Job) in Text(job.waitReason ?? "—").lineLimit(1).help(job.waitReason ?? "") }
         }
     }
 
@@ -209,7 +211,7 @@ struct JobsView: View {
                 Button("Remove…", role: .destructive) { confirmingExclusion = true }.disabled(selectedExclusion == nil)
             }.disabled(action.busy)
             Table(exclusions, selection: $selectedExclusion) {
-                TableColumn("Coin", value: \.coinId)
+                TableColumn("Coin") { (row: Exclusion) in Text(coinLabel(row.coinId, coins)).help(row.coinId) }
                 TableColumn("Reason", value: \.reason)
             }
         }.padding(.top, 6)
@@ -251,7 +253,7 @@ private struct JobForm: View {
             Picker("Job type", selection: $kind) {
                 ForEach(JobKind.allCases, id: \.self) { item in Text(item.rawValue).tag(item) }
             }
-            AccountPicker(accounts: accounts, selection: $account)
+            AccountPicker(accounts: accounts, selection: $account, anyAccountLabel: "Any account")
             if kind == .transfers { CoinPicker(coins: coins, selection: $coin) }
             if kind == .daily { TextField("Minimum USD", text: $minimum) }
             TextField("Frequency (seconds)", text: $frequency)
@@ -259,12 +261,12 @@ private struct JobForm: View {
             ActionNotice(action: action)
             HStack {
                 Button("Cancel") { dismiss() }
-                Button("Save Job") { action.run { try await save() } }.disabled(account.isEmpty || (kind == .transfers && coin.isEmpty))
+                Button("Save Job") { action.run { try await save() } }.disabled(kind == .transfers && coin.isEmpty)
             }
         }.formStyle(.grouped).frame(width: 420).disabled(action.busy).interactiveDismissDisabled(action.busy)
             .onAppear {
                 guard let job else { return }
-                kind = job.kind; account = job.accountId; coin = job.coinId ?? ""
+                kind = job.kind; account = job.accountId ?? ""; coin = job.coinId ?? ""
                 frequency = String(job.intervalSeconds); minimum = job.options.balanceMin.map { String($0) } ?? ""
                 enabled = job.enabled
             }
@@ -276,7 +278,7 @@ private struct JobForm: View {
         }
         let balanceMin = try (kind == .daily ? minimum.nonnegative("Minimum USD") : nil)
         if kind == .daily, balanceMin == nil { throw InputError("Enter the daily job's minimum USD.") }
-        let body = JobInput(kind: kind, accountId: account, coinId: kind == .transfers ? coin : nil,
+        let body = JobInput(kind: kind, accountId: account.nonblank, coinId: kind == .transfers ? coin : nil,
                             options: JobOptions(balanceMin: balanceMin), intervalSeconds: interval, enabled: enabled)
         onSave(try await client.saveJob(body, id: job?.id))
     }

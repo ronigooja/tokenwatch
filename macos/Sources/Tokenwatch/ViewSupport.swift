@@ -71,6 +71,10 @@ func validateBounds<T: Comparable>(_ lower: T?, _ upper: T?, _ name: String) thr
     if let lower, let upper, lower > upper { throw InputError("\(name): the lower bound exceeds the upper bound.") }
 }
 
+func coinLabel(_ id: String, _ coins: [Coin]) -> String {
+    coins.first(where: { $0.id == id })?.symbol ?? id
+}
+
 func number(_ value: Double?) -> String {
     value.map { $0.formatted(.number.precision(.fractionLength(0...8))) } ?? "—"
 }
