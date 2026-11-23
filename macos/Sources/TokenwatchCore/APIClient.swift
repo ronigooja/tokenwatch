@@ -67,8 +67,8 @@ public struct APIClient: Sendable {
                          websocket: Bool = false) throws -> URLRequest {
         var url = server
         for part in path {
-            guard part.range(of: #"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"#, options: .regularExpression) != nil,
-                  !part.contains(where: \.isWhitespace) else { throw APIError.invalidPath }
+            guard part.range(of: #"^[A-Za-z0-9][A-Za-z0-9_@+.-]{0,127}$"#, options: .regularExpression) != nil,
+                  !part.contains(".."), !part.contains(where: \.isWhitespace) else { throw APIError.invalidPath }
             url.appendPathComponent(part)
         }
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { throw APIError.invalidServer }

@@ -11,7 +11,9 @@ private final class StubProtocol: URLProtocol {
         let status: Int
         let body: String
         let authorized = request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-token"
-        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let query = components?.queryItems ?? []
+        let encodedPath = components?.percentEncodedPath ?? ""
         switch (request.httpMethod, url.path) {
         case ("GET", "/fixture/transfers"):
             let names = Set(query.map(\.name))
@@ -86,6 +88,18 @@ private final class StubProtocol: URLProtocol {
         case ("POST", "/fixture/accounts/acc-1/login/finish") where authorized:
             status = 200
             body = #"{"status":"logged_in"}"#
+        case ("POST", "/fixture/accounts/user+a@example.com/login") where authorized && encodedPath == emailLoginPath:
+            status = 201
+            body = #"{"state":"starting","path":"/login-view/ticket-2/vnc.html?autoconnect=1"}"#
+        case ("POST", "/fixture/accounts/user+a@example.com/login/finish") where authorized && encodedPath == emailLoginPath + "/finish":
+            status = 200
+            body = #"{"status":"logged_in"}"#
+        case ("PUT", "/fixture/accounts/user+a@example.com") where authorized && encodedPath == emailAccountPath:
+            status = keys(bodyObject()) == ["status"] ? 200 : 422
+            body = status == 200 ? accountFixture : #"{"detail":"Invalid update"}"#
+        case ("DELETE", "/fixture/accounts/user+a@example.com") where authorized && encodedPath == emailAccountPath:
+            status = 204
+            body = ""
         default:
             status = 404
             body = #"{"detail":"No stub route"}"#
@@ -121,6 +135,9 @@ private final class StubProtocol: URLProtocol {
         Set((payload ?? [:]).keys)
     }
 }
+
+private let emailAccountPath = "/fixture/accounts/user+a@example.com"
+private let emailLoginPath = emailAccountPath + "/login"
 
 private let accountFixture = #"{"id":"acc-1","email":"user@example.com","password":"fixture-password","proxy_url":"socks5h://user:pass@proxy.example:1080","status":"active","pause_reason":null,"available_at":0,"failures":0,"managed":true,"timezone":"UTC","persona":"windows"}"#
 
@@ -220,6 +237,29 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(state.state, .open)
         let finished = try await api.finishAccountLogin("acc-1")
         XCTAssertEqual(finished.status, .loggedIn)
+    }
+
+    func testEmailAccountIDPaths() async throws {
+        let api = try client()
+        let id = "user+a@example.com"
+        let login = try await api.startAccountLogin(id)
+        XCTAssertEqual(login.state, .starting)
+        let finished = try await api.finishAccountLogin(id)
+        XCTAssertEqual(finished.status, .loggedIn)
+        let saved = try await api.saveAccount(id, update: AccountUpdate(status: .paused))
+        XCTAssertEqual(saved.id, "acc-1")
+        try await api.deleteAccount(id)
+    }
+
+    func testInvalidAccountIDPathsAreRejected() async throws {
+        let api = try client()
+        for id in ["..", "a..b", "a/b", ".hidden", "a b", "a\\b"] {
+            do {
+                _ = try await api.accountSession(id)
+                XCTFail("Expected \(id) to be rejected")
+            } catch APIError.invalidPath {
+            }
+        }
     }
 
     func testAccountDecodesWithAndWithoutManagementFields() throws {

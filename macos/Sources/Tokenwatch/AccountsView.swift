@@ -35,9 +35,9 @@ struct AccountsView: View {
                 Label("Login required: \(signedOut.map(\.label).joined(separator: ", "))", systemImage: "exclamationmark.octagon.fill")
                     .font(.headline).foregroundStyle(.red)
             }
-            ActionNotice(action: action)
             Table(accounts, selection: $selection) {
                 TableColumn("Account") { (account: Account) in Text(account.label) }
+                    .width(min: 180, ideal: 260)
                 TableColumn("Status") { (account: Account) in Text(account.status.rawValue) }
                 TableColumn("Session") { (account: Account) in
                     Text(sessions[account.id]?.rawValue ?? "—")
@@ -45,28 +45,35 @@ struct AccountsView: View {
                 }
                 TableColumn("Timezone") { (account: Account) in Text(account.timezone ?? "—") }
                 TableColumn("Proxy URL") { (account: Account) in Text(account.proxyUrl ?? "—") }
+                    .width(min: 180, ideal: 260)
                 TableColumn("Pause Reason") { (account: Account) in Text(account.pauseReason ?? "—") }
                 TableColumn("Failures") { (account: Account) in Text(String(account.failures)) }
+                    .width(min: 60, ideal: 70, max: 90)
             }
-            if let account = selected {
-                HStack {
+            HStack {
+                if let account = selected {
                     Button("Log In") { loggingIn = LoginRequest(account: account, page: .login) }
                     Button("Register") { loggingIn = LoginRequest(account: account, page: .register) }
                     Button("Edit…") { editing = account }.disabled(account.managed != true)
                     Button(account.status == .paused ? "Resume" : "Pause") { action.run { try await setPaused(account) } }
                     Button("Delete…", role: .destructive) { confirmingDelete = true }.disabled(account.managed != true)
-                }.disabled(action.busy)
-                if let error = checkErrors[account.id] { Text("Session check: \(error)").foregroundStyle(.red) }
-                if let event = lastPause[account.id], case .string(let reason)? = event.data["reason"] {
-                    Text("Last pause alert: \(reason) · \(event.createdAt.formatted())")
                 }
-                if account.availableAt > 0 {
-                    Text("Available at: \(Date(timeIntervalSince1970: account.availableAt).formatted())")
+            }.disabled(action.busy)
+            VStack(alignment: .leading) {
+                ActionNotice(action: action)
+                if let account = selected {
+                    if let error = checkErrors[account.id] { Text("Session check: \(error)").foregroundStyle(.red) }
+                    if let event = lastPause[account.id], case .string(let reason)? = event.data["reason"] {
+                        Text("Last pause alert: \(reason) · \(event.createdAt.formatted())")
+                    }
+                    if account.availableAt > 0 {
+                        Text("Available at: \(Date(timeIntervalSince1970: account.availableAt).formatted())")
+                    }
                 }
+                if let loginNote { Text(loginNote).foregroundStyle(.secondary) }
             }
-            if let loginNote { Text(loginNote).foregroundStyle(.secondary) }
-            Text("The API exposes failure counts and pause alerts, not a complete recent-error history. Only managed accounts can be edited or deleted.")
-                .font(.caption).foregroundStyle(.secondary)
+            .font(.caption)
+            .frame(height: 60, alignment: .topLeading)
         }.navigationTitle("Accounts").task { await action.load { try await load() } }
             .sheet(isPresented: $adding, onDismiss: {
                 loggingIn = pendingLogin

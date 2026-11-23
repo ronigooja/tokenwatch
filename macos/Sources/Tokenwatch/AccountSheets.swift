@@ -30,13 +30,15 @@ struct AccountForm: View {
 
     var body: some View {
         Form {
-            TextField("Email", text: $email).disabled(existing != nil)
-            TextField("Password", text: $password)
-            TextField("Proxy URL (socks5h://user:pass@host:port)", text: $proxyURL)
             if existing == nil {
-                Text("The server detects the timezone and uses the Windows persona.")
+                TextField("Email", text: $email)
+            } else {
+                LabeledContent("Email", value: email)
+                Text("The email is the account ID and cannot be changed. To use another email, delete the account and add it again.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            TextField("Password", text: $password)
+            TextField("Proxy", text: $proxyURL, prompt: Text("socks5h://user:pass@host:port"))
             ActionNotice(action: action)
             HStack {
                 Button("Cancel") { dismiss() }
@@ -115,15 +117,13 @@ struct LoginSheet: View {
 
     private var statusText: String {
         switch phase {
-        case nil: return action.busy ? "Requesting the login window…" : "The login window is unavailable."
-        case .starting?: return "Starting the remote browser…"
+        case nil, .starting?: return "Starting…"
         case .open?:
             return page == .register
-                ? "Complete registration in the window below, then press Done."
-                : "Log in in the window below, then press Done."
-        case .closed?: return "The login window closed. Press Done to check the session."
-        case .failed?: return "Remote login failed. Press Done to check the session."
-        case .none?: return "No login window is open. Press Done to check the session."
+                ? "Open. Complete registration in the window, then press Done."
+                : "Open. Complete the verification and submit in the window, then press Done."
+        case .closed?, .none?: return "The window was closed. Press Done to check the session."
+        case .failed?: return "Failed to open the window."
         }
     }
 
@@ -134,11 +134,15 @@ struct LoginSheet: View {
                 Spacer()
                 Button("Done") { action.run { try await finish() } }.disabled(action.busy)
             }
-            Text(statusText).foregroundStyle(.secondary)
-            Text("Email and password are filled in automatically. Complete the verification and submit.")
-                .font(.caption).foregroundStyle(.secondary)
-            ActionNotice(action: action)
-            if let note { Text(note).foregroundStyle(.red) }
+            Group {
+                if let message = action.error ?? note {
+                    Text(message).foregroundStyle(.red).textSelection(.enabled)
+                } else {
+                    Text(statusText).foregroundStyle(.secondary)
+                }
+            }
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, height: 18, alignment: .leading)
             if let loginURL {
                 LoginWebView(server: client.serverURL, url: loginURL).frame(minHeight: 520)
             } else {
