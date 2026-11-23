@@ -391,6 +391,30 @@ def test_manual_exclusions_are_distinct_from_catalog_rules(settings):
         assert client.get("/exclusions").json() == []
 
 
+def test_catalog_deployments_serialize_without_internal_fields(settings):
+    feeds = catalog_feeds()
+    feeds[NETWORK_URL]["data"][-1]["networkList"][0]["contractAddress"] = None
+    app = create_app(settings, run_scheduler=False)
+    with TestClient(app, headers={"Authorization": "Bearer test-token"}) as client:
+        catalog = CoinCatalog(app.state.store, None, mock_feeds(feeds, []))
+        asyncio.run(catalog.refresh_snapshot())
+        with app.state.store() as db:
+            rows = db.scalars(select(Coin).where(Coin.symbol.in_(["BTC", "AVAX"]))).all()
+            assert any(len(row.deployments) > 1 for row in rows)
+            assert all("address_known" in deployment for row in rows for deployment in row.deployments)
+            coin_id = next(row.id for row in rows if row.symbol == "BTC")
+        for url, params in [("/coins", {}), (f"/coins/{coin_id}", {}),
+                            ("/coins", {"status": "needs_manual_mapping"})]:
+            response = client.get(url, params=params)
+            assert response.status_code == 200
+            result = response.json()
+            for coin in result if isinstance(result, list) else [result]:
+                assert set(coin) == {"id", "symbol", "pricing_id", "status", "reason", "sources",
+                                     "deployments", "matched_chains"}
+                for deployment in coin["deployments"]:
+                    assert set(deployment) == {"feed", "chain", "address", "deposit_enabled", "withdraw_enabled"}
+
+
 def test_schema_reset_preserves_history_and_jobs(settings):
     store = open_store(settings.database)
     with store.begin() as db:
