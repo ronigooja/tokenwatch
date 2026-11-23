@@ -212,7 +212,7 @@ def test_distributed_selection_failover_and_wait(core, settings):
         scheduler.tick()
         await scheduler.running[1]
         with store() as db:
-            assert db.get(Job, 1).wait_reason == "no_active_account_with_confirmed_session"
+            assert db.get(Job, 1).wait_reason == "no_eligible_account"
         assert len(fake.calls) == 2
 
     asyncio.run(run())
@@ -228,6 +228,55 @@ def test_distributed_ties_use_least_recently_used(core):
     fake.responses.append({})
     asyncio.run(gate.get(None, "/example", None))
     assert fake.calls[0][0] == "b"
+
+
+def test_distributed_empty_cache_selects_earliest_active_account(core):
+    store, fake, _, gate, _ = core
+    with store.begin() as db:
+        db.get(Account, "a").available_at = 900
+        db.get(Account, "b").available_at = 800
+        db.add(Account(id="paused", proxy_ref="paused", status="paused", available_at=700))
+    assert not gate.status_cache
+    fake.responses.append({})
+    asyncio.run(gate.get(None, "/example", None))
+    assert fake.calls == [("b", "/example", None)]
+
+
+def test_distributed_skips_logged_out_until_status_changes(core):
+    from tokenwatch.scheduler import DistributionWait
+
+    store, fake, _, gate, _ = core
+    with store.begin() as db:
+        db.get(Account, "a").available_at = 800
+        db.get(Account, "b").available_at = 900
+    gate.remember_status("a", "logged_out")
+    fake.responses.append({})
+    asyncio.run(gate.get(None, "/example", None))
+    assert [call[0] for call in fake.calls] == ["b"]
+    gate.remember_status("b", "logged_out")
+    with pytest.raises(DistributionWait, match="no_eligible_account"):
+        asyncio.run(gate.get(None, "/example", None))
+    assert len(fake.calls) == 1
+    gate.remember_status("a", "logged_in")
+    fake.responses.append({})
+    asyncio.run(gate.get(None, "/example", None))
+    assert [call[0] for call in fake.calls] == ["b", "a"]
+
+
+def test_distributed_unknown_auth_failure_pauses_and_fails_over(core):
+    from tokenwatch.upstream import AuthRequired
+
+    store, fake, _, gate, _ = core
+    with store.begin() as db:
+        db.get(Account, "a").available_at = 800
+        db.get(Account, "b").available_at = 900
+    assert not gate.status_cache
+    fake.responses.extend([AuthRequired(), {"ok": True}])
+    assert asyncio.run(gate.get(None, "/example", None)) == {"ok": True}
+    assert fake.calls == [("a", "/example", None), ("b", "/example", None)]
+    with store() as db:
+        assert (db.get(Account, "a").status, db.get(Account, "a").pause_reason) == ("paused", "AuthRequired")
+    assert gate.status_cache["a"][1] == "logged_out"
 
 
 def test_daily_matches_lazily_and_collects_every_supported_coin(core):

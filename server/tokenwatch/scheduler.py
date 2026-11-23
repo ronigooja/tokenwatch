@@ -66,10 +66,10 @@ class RequestGate:
                     active = db.scalars(select(Account).where(Account.status == "active").order_by(
                         Account.available_at, Account.last_used_at, Account.id)).all()
                 available = [account for account in active if self.status_cache.get(account.id, (None, None))[1]
-                             == "logged_in"]
+                             != "logged_out"]
                 stamp = self.clock()
                 if not available:
-                    raise DistributionWait("no_active_account_with_confirmed_session", stamp + 1)
+                    raise DistributionWait("no_eligible_account", stamp + 1)
                 idle = [account for account in available if not self.locks[account.id].locked()]
                 if not idle or (idle[0].available_at > stamp and any(
                     self.locks[account.id].locked() for account in available
