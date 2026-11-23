@@ -62,9 +62,8 @@ struct AccountForm: View {
     private func update() async throws {
         guard let existing else { return }
         let proxy = try validProxy()
-        let secret = try validPassword()
         let update = AccountUpdate(proxyUrl: proxy == existing.proxyUrl ? nil : proxy,
-                                   password: secret == existing.password ? nil : secret)
+                                   password: password.isEmpty || password == existing.password ? nil : password)
         if update.proxyUrl != nil || update.password != nil {
             onSave(try await client.saveAccount(existing.id, update: update), nil)
         }
