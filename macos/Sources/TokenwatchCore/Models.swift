@@ -405,6 +405,25 @@ public struct Job: Codable, Sendable, Identifiable {
     public let enabled: Bool
     public let nextRun: Double
     public let waitReason: String?
+    public let lastError: String?
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int.self, forKey: .id)
+        kind = try container.decode(JobKind.self, forKey: .kind)
+        accountId = try container.decodeIfPresent(String.self, forKey: .accountId)
+        coinId = try container.decodeIfPresent(String.self, forKey: .coinId)
+        options = try container.decode(JobOptions.self, forKey: .options)
+        intervalSeconds = try container.decode(Double.self, forKey: .intervalSeconds)
+        enabled = try container.decode(Bool.self, forKey: .enabled)
+        nextRun = try container.decode(Double.self, forKey: .nextRun)
+        waitReason = try container.decodeIfPresent(String.self, forKey: .waitReason)
+        lastError = try container.decodeIfPresent(String.self, forKey: .lastError)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, accountId, coinId, options, intervalSeconds, enabled, nextRun, waitReason, lastError
+    }
 }
 
 public struct RuleConditions: Codable, Sendable {

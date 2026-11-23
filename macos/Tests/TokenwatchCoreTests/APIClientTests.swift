@@ -414,6 +414,17 @@ final class APIClientTests: XCTestCase {
         let pooled = try APIClient.decoder().decode(Job.self, from: Data(anyAccount.utf8))
         XCTAssertNil(pooled.accountId)
         XCTAssertEqual(pooled.waitReason, "No active account")
+        XCTAssertNil(pooled.lastError)
+    }
+
+    func testJobDecodesLastError() throws {
+        let failed = #"{"id":6,"kind":"transfers","account_id":"acc-1","coin_id":"native:bitcoin","options":{"balance_min":null},"interval_seconds":60,"enabled":true,"next_run":0,"wait_reason":null,"last_error":"HTTP 502"}"#
+        let job = try APIClient.decoder().decode(Job.self, from: Data(failed.utf8))
+        XCTAssertEqual(job.lastError, "HTTP 502")
+        XCTAssertNil(job.waitReason)
+        let cleared = #"{"id":6,"kind":"transfers","account_id":"acc-1","coin_id":"native:bitcoin","options":{"balance_min":null},"interval_seconds":60,"enabled":true,"next_run":0,"wait_reason":null,"last_error":null}"#
+        let ok = try APIClient.decoder().decode(Job.self, from: Data(cleared.utf8))
+        XCTAssertNil(ok.lastError)
     }
 
     func testJobInputEncodesNullAccount() throws {

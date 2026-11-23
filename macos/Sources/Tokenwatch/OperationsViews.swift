@@ -190,6 +190,7 @@ struct JobsView: View {
                 Text(job.nextRun > 0 ? Date(timeIntervalSince1970: job.nextRun).formatted() : "—")
             }
             TableColumn("Wait") { (job: Job) in Text(job.waitReason ?? "—").lineLimit(1).help(job.waitReason ?? "") }
+            TableColumn("Last Error") { (job: Job) in Text(job.lastError ?? "").lineLimit(1).help(job.lastError ?? "") }
         }
     }
 

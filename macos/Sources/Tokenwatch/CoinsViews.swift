@@ -5,6 +5,7 @@ import TokenwatchCore
 struct CoinsView: View {
     let client: APIClient
     @State private var coins: [Coin] = []
+    @State private var manualExclusions: Set<String> = []
     @State private var mapping: CoinMapping?
     @State private var status: CoinStatus?
     @State private var search = ""
@@ -70,7 +71,7 @@ struct CoinsView: View {
                     MappingForm(client: client, coin: coin, current: mapping?.pricingId) { saved in
                         settingMapping = false
                         mapping = saved
-                        action.run { try await reconcile(coin.id) }
+                        action.run { try await load() }
                     }
                 }
             }
@@ -78,7 +79,7 @@ struct CoinsView: View {
                 if let coin = selected {
                     ExclusionForm(client: client, coin: coin) {
                         excluding = false
-                        action.run { try await reconcile(coin.id) }
+                        action.run { try await load() }
                     }
                 }
             }
@@ -108,9 +109,9 @@ struct CoinsView: View {
                         Button("Clear") { action.run { try await clearMapping(coin.id) } }
                     }
                 }.disabled(action.busy)
-                if coin.status == .excluded {
+                if manualExclusions.contains(coin.id) {
                     Button("Include") { action.run { try await include(coin.id) } }.disabled(action.busy)
-                } else {
+                } else if coin.status != .excluded {
                     Button("Exclude…") { excluding = true }.disabled(action.busy)
                 }
             }.padding(10)
@@ -120,24 +121,21 @@ struct CoinsView: View {
     private func flag(_ value: Bool?) -> String { value.map { $0 ? "Yes" : "No" } ?? "—" }
 
     private func load() async throws {
-        coins = try await client.coins()
+        async let coinList = client.coins()
+        async let exclusionList = client.exclusions()
+        (coins, manualExclusions) = try await (coinList, Set(exclusionList.map(\.coinId)))
         if let selection, !coins.contains(where: { $0.id == selection }) { self.selection = nil }
-    }
-
-    private func reconcile(_ id: String) async throws {
-        let updated = try await client.coin(id)
-        coins = coins.map { $0.id == updated.id ? updated : $0 }
     }
 
     private func clearMapping(_ id: String) async throws {
         try await client.deleteCoinMapping(id)
         mapping = nil
-        try await reconcile(id)
+        try await load()
     }
 
     private func include(_ id: String) async throws {
         try await client.deleteExclusion(id)
-        try await reconcile(id)
+        try await load()
     }
 }
 
