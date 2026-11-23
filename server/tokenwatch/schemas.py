@@ -65,6 +65,11 @@ class AccountSession(Schema):
     status: Literal["logged_in", "logged_out", "unknown"]
 
 
+class LoginSession(Schema):
+    state: Literal["none", "starting", "open", "closed", "failed"]
+    path: str | None
+
+
 class ExclusionInput(Schema):
     reason: Annotated[str, Field(min_length=1)]
 

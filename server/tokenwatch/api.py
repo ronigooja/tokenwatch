@@ -16,6 +16,8 @@ from . import schemas as s
 from .coins import CoinCatalog, CoinGeckoResolver
 from .collectors import Collectors, snapshot_diff
 from .config import load_settings
+from .login_session import LoginSessions
+from . import novnc
 from .db import (Account, Coin, CoinMapping, DailyBalance, DailyCollection, Event, Exclusion,
                  Job, PushLog, Rule, Snapshot, SnapshotRow, Subscription, Transfer, TransferCoin,
                  now, open_store)
@@ -190,8 +192,11 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
                     task = asyncio.create_task(Scheduler(store, config, {
                         "daily": collectors.daily, "transfers": collectors.transfers, "coin_catalog": catalog.refresh,
                     }).run())
+            app.state.logins = LoginSessions(store, client, app.state.gate, config)
             yield
         finally:
+            if hasattr(app.state, "logins"):
+                await app.state.logins.shutdown()
             if task:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -200,6 +205,20 @@ def create_app(settings=None, upstream=None, *, resolver=None, candidates=None, 
 
     app = FastAPI(title="Tokenwatch", version="0.1.0", lifespan=lifespan)
     auth = [Depends(authorize)]
+    novnc.install(app)
+
+    @app.post("/accounts/{account_id}/login", response_model=s.LoginSession, status_code=201, dependencies=auth)
+    async def start_login(account_id: s.Ref, request: Request):
+        return await request.app.state.logins.start(account_id)
+
+    @app.get("/accounts/{account_id}/login", response_model=s.LoginSession, dependencies=auth)
+    async def get_login(account_id: s.Ref, request: Request, db: DB):
+        find(db, Account, account_id)
+        return request.app.state.logins.view(account_id)
+
+    @app.post("/accounts/{account_id}/login/finish", response_model=s.AccountSession, dependencies=auth)
+    async def finish_login(account_id: s.Ref, request: Request):
+        return await request.app.state.logins.finish(account_id)
 
     @app.exception_handler(IntegrityError)
     async def conflict(_request, _error):

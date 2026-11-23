@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Callable
 import hashlib
 import json
 import math
@@ -146,8 +147,10 @@ class BrowserUpstreamClient:
         except Exception:
             return "unknown"
 
-    async def manual_login(self, account_id: str) -> None:
+    async def manual_login(self, account_id: str, *, ready: Callable[[], None] | None = None) -> None:
         async with self._lease(account_id, interactive=True) as instance:
+            if ready:
+                ready()
             await _through(instance.forward, instance.session.wait_closed)
 
     async def _start(self, account: AccountConfig, interactive: bool) -> _Instance:

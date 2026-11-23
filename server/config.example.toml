@@ -13,3 +13,6 @@ transfer_retention_days = 30
 snapshot_retention_days = 30
 allow_pricing_id_checks = false
 account_status_ttl = 600.0
+novnc_url = ""
+# vnc_password = ""
+login_timeout = 900.0

@@ -27,6 +27,10 @@ Automatic mappings and ambiguity are persisted separately from manual overrides,
 
 Session status probes use signed `/user` requests through the account request gate. API reads share an in-memory TTL cache (`account_status_ttl`, default 600 seconds); successful scheduled requests and authentication failures also refresh it. A probe that fails for another reason returns `unknown`, is not cached, and does not count toward the account's failures or backoff; `Blocked`, `RateLimited` and `AuthRequired` during a probe pause the account like any other request.
 
+## Login session
+
+An authenticated client starts one interactive login session at a time with `POST /accounts/{id}/login`. The account is paused while its browser opens. `GET /accounts/{id}/login` reports `none`, `starting`, `open`, `closed`, or `failed`; launch failure restores its previous account status. The response contains a session-scoped secret ticket URL: HTTP assets at `/login-view/{ticket}/...` and the WebSocket at `/login-view/{ticket}/websockify` authenticate only with that ticket. Do not share or log it. `POST /accounts/{id}/login/finish` closes the browser, invalidates the ticket, activates the account, and performs one fresh rate-limited session status probe. After `login_timeout` seconds (default 900), the server closes the session and activates the account without a probe. See [deployment](deployment.md) for display and noVNC setup.
+
 ## Invariants
 
 - Each account is bound to one proxy; there is no direct-connection fallback. Why: avoid exposing the server IP and mixing identities.
