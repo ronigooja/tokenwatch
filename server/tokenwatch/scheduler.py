@@ -41,16 +41,17 @@ class RequestGate:
             if cached and self.clock() - cached[0] < self.settings.account_status_ttl:
                 return cached[1]
             try:
-                payload = await self.get(account_id, "/user", None)
-                status = "logged_in" if isinstance(payload, dict) and payload else "unknown"
+                payload = await self.get(account_id, "/user", None, probe=True)
             except AuthRequired:
-                status = "logged_out"
+                return "logged_out"
             except Exception:
-                status = "unknown"
-            self.remember_status(account_id, status)
-            return status
+                return "unknown"
+            if isinstance(payload, dict) and payload:
+                return "logged_in"
+            self.status_cache.pop(account_id, None)
+            return "unknown"
 
-    async def get(self, account_id, path, params, decode=lambda value: value):
+    async def get(self, account_id, path, params, decode=lambda value: value, probe=False):
         async with self.locks[account_id]:
             while True:
                 with self.store.begin() as db:
@@ -70,6 +71,8 @@ class RequestGate:
             except UpstreamError as exc:
                 if isinstance(exc, AuthRequired):
                     self.remember_status(account_id, "logged_out")
+                if probe and not isinstance(exc, (AuthRequired, Blocked, RateLimited)):
+                    raise
                 with self.store.begin() as db:
                     if account := db.get(Account, account_id):
                         account.failures += 1

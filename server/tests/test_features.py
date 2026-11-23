@@ -9,8 +9,8 @@ from fastapi.testclient import TestClient
 from test_core import core, settings, transfer
 from tokenwatch.api import create_app
 from tokenwatch.coins import Candidate, CoinCatalog, CoinGeckoResolver, binance_candidates, public_json
-from tokenwatch.db import CatalogMapping, Coin, CoinMapping, DailyBalance, now
-from tokenwatch.upstream import AuthRequired, BadResponse
+from tokenwatch.db import Account, CatalogMapping, Coin, CoinMapping, DailyBalance, now
+from tokenwatch.upstream import AuthRequired, BadResponse, Blocked, RateLimited
 
 
 @pytest.mark.parametrize("span,expected", [(99, 49.5), (6000, 3000), (0, 3600)])
@@ -26,8 +26,7 @@ def test_first_transfer_window(core, span, expected):
 
 
 @pytest.mark.parametrize("response,status", [({"id": "user"}, "logged_in"),
-                                            (AuthRequired(), "logged_out"),
-                                            (BadResponse(), "unknown"), ([], "unknown")])
+                                            (AuthRequired(), "logged_out")])
 def test_session_cache_and_gate(core, response, status):
     store, fake, clock, gate, collectors = core
     fake.responses.append(response)
@@ -37,6 +36,31 @@ def test_session_cache_and_gate(core, response, status):
     asyncio.run(run())
     assert len(fake.calls) == 1
     assert fake.calls[0][1] == "/user"
+
+
+@pytest.mark.parametrize("response", [BadResponse(), [], {}])
+def test_unknown_status_is_not_cached_and_does_not_penalize_the_account(core, response):
+    store, fake, clock, gate, collectors = core
+    fake.responses.extend([response, {"id": "user"}])
+    async def run():
+        assert await gate.account_status("a") == "unknown"
+        assert await gate.account_status("a") == "logged_in"
+    asyncio.run(run())
+    assert len(fake.calls) == 2
+    with store.begin() as db:
+        account = db.get(Account, "a")
+        assert (account.failures, account.status) == (0, "active")
+
+
+@pytest.mark.parametrize("error", [Blocked(), RateLimited(retry_after=500)])
+def test_status_probe_still_pauses_on_blocked_or_rate_limited(core, error):
+    store, fake, clock, gate, collectors = core
+    fake.responses.append(error)
+    assert asyncio.run(gate.account_status("a")) == "unknown"
+    with store.begin() as db:
+        account = db.get(Account, "a")
+        assert (account.failures, account.status) == (1, "paused")
+        assert account.pause_reason == type(error).__name__
 
 
 def test_scheduler_refreshes_session_cache(core):
@@ -54,13 +78,16 @@ def test_scheduler_refreshes_session_cache(core):
 
 def test_session_ttl(core):
     store, fake, clock, gate, collectors = core
-    fake.responses.extend([{"id": "u"}, BadResponse()])
+    fake.responses.extend([{"id": "u"}, BadResponse(), {"id": "u"}])
     async def run():
         assert await gate.account_status("a") == "logged_in"
-        clock.value += gate.settings.account_status_ttl
+        clock.value += gate.settings.account_status_ttl - 1
+        assert await gate.account_status("a") == "logged_in"
+        clock.value += 1
         assert await gate.account_status("a") == "unknown"
+        assert await gate.account_status("a") == "logged_in"
     asyncio.run(run())
-    assert len(fake.calls) == 2
+    assert len(fake.calls) == 3
 
 
 def test_gecko_mapping_cache_and_ambiguity(core, settings):

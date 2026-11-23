@@ -25,7 +25,7 @@ Candidates are the union of trading Binance spot base assets and Binance Alpha s
 
 Automatic mappings and ambiguity are persisted separately from manual overrides, which take priority. CoinGecko IDs are tentative Arkham pricing IDs, not proof of upstream support. New mappings remain unverified unless manually verified or an opt-in, rate-limited Arkham balance check (`limit=1`) returns data. The database retains ineligible candidates with their reasons. The client can edit mappings and exclusions.
 
-Session status probes use signed `/user` requests through the account request gate. API reads share an in-memory TTL cache (`account_status_ttl`, default 600 seconds); successful scheduled requests and authentication failures also refresh it. Other probe failures produce `unknown` and retain normal upstream backoff/pause behavior.
+Session status probes use signed `/user` requests through the account request gate. API reads share an in-memory TTL cache (`account_status_ttl`, default 600 seconds); successful scheduled requests and authentication failures also refresh it. A probe that fails for another reason returns `unknown`, is not cached, and does not count toward the account's failures or backoff; `Blocked`, `RateLimited` and `AuthRequired` during a probe pause the account like any other request.
 
 ## Invariants
 
