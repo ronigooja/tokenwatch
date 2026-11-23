@@ -139,8 +139,10 @@ public struct APIClient: Sendable {
         _ = try await send(request(["accounts", id], method: "DELETE"))
     }
 
-    public func startAccountLogin(_ id: String) async throws -> AccountLogin {
-        try await decode(request(["accounts", id, "login"], method: "POST"))
+    private struct LoginInput: Encodable { let page: LoginPage }
+
+    public func startAccountLogin(_ id: String, page: LoginPage = .login) async throws -> AccountLogin {
+        try await decode(request(["accounts", id, "login"], method: "POST", body: LoginInput(page: page)))
     }
 
     public func accountLoginState(_ id: String) async throws -> AccountLogin {
