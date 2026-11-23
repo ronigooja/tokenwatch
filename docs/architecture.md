@@ -4,7 +4,7 @@ Python server on a Linux host; SwiftUI macOS client. Upstream data is documented
 
 ## Components
 
-- **Browser pool**: one fingerprint-chromium instance per account (Windows persona, own profile, own proxy), run under Xvfb. Requests are issued from inside the logged-in page. Why: the upstream requires a login session and blocks plain server requests.
+- **Browser pool**: one fingerprint-chromium instance per account (Windows persona with canvas spoofing disabled, own profile, own proxy), run under Xvfb. Requests are issued from inside the logged-in page. Why: the upstream requires a login session and blocks plain server requests.
 - **Scheduler**: runs jobs per account with rate limits, jitter, and backoff. A paused account stops all its jobs.
 - **Collectors**:
   - Daily balances: for every coin in the coin list, fetch entity balance changes once and store one row per entity per day.

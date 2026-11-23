@@ -105,13 +105,16 @@ class _PlaywrightSession:
 def persona_args(account: AccountConfig) -> list[str]:
     if account.persona != "windows":
         return []
-    return [
+    args = [
         f"--fingerprint={account.fingerprint_seed}",
         "--fingerprint-platform=windows",
         "--fingerprint-platform-version=15.0.0",
         "--fingerprint-brand=Chrome",
         "--fingerprint-hardware-concurrency=8",
     ]
+    if account.disable_spoofing:
+        args.append(f"--disable-spoofing={','.join(account.disable_spoofing)}")
+    return args
 
 
 class PlaywrightLauncher:

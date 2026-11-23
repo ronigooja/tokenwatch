@@ -19,6 +19,22 @@ class PersonaTests(unittest.TestCase):
         self.assertIn("--fingerprint=7", args)
         self.assertIn("--fingerprint-platform=windows", args)
 
+    def test_windows_persona_disables_canvas_spoofing_by_default(self):
+        account = AccountConfig("a1", "socks5h://u:p@proxy.example:1080", 7, persona="windows")
+        self.assertEqual(persona_args(account)[-1], "--disable-spoofing=canvas")
+
+    def test_disable_spoofing_is_configurable(self):
+        base = ("a1", "socks5h://u:p@proxy.example:1080", 7)
+        both = AccountConfig(*base, persona="windows", disable_spoofing=["canvas", "gpu"])
+        self.assertEqual(persona_args(both)[-1], "--disable-spoofing=canvas,gpu")
+        none = AccountConfig(*base, persona="windows", disable_spoofing=[])
+        self.assertFalse(any(arg.startswith("--disable-spoofing") for arg in persona_args(none)))
+
+    def test_invalid_disable_spoofing_is_rejected(self):
+        for value in (["webgl"], ["canvas", "canvas"]):
+            with self.assertRaises(ValueError):
+                AccountConfig("a1", "socks5h://u:p@proxy.example:1080", 1, disable_spoofing=value)
+
     def test_unknown_persona_is_rejected(self):
         with self.assertRaises(ValueError):
             AccountConfig("a1", "socks5h://u:p@proxy.example:1080", 1, persona="mac")

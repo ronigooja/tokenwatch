@@ -6,6 +6,9 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 
+SPOOFING_FEATURES = frozenset({"font", "audio", "canvas", "clientrects", "gpu"})
+
+
 def proxy_parts(url: str) -> tuple[str, int, str, str]:
     try:
         parts = urlsplit(url)
@@ -32,10 +35,16 @@ class AccountConfig:
     fingerprint_seed: int
     timezone: str = "America/New_York"
     persona: str = "none"
+    disable_spoofing: tuple[str, ...] = ("canvas",)
 
     def __post_init__(self) -> None:
         if self.persona not in ("none", "windows"):
             raise ValueError("Invalid browser persona")
+        object.__setattr__(self, "disable_spoofing", tuple(self.disable_spoofing))
+        if not set(self.disable_spoofing) <= SPOOFING_FEATURES or len(set(self.disable_spoofing)) != len(
+            self.disable_spoofing
+        ):
+            raise ValueError("Invalid browser disable_spoofing")
         if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]*", self.id):
             raise ValueError("Invalid browser account ID")
         if type(self.fingerprint_seed) is not int or self.fingerprint_seed < 0:
