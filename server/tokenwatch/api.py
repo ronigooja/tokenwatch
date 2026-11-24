@@ -179,7 +179,7 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
             if client is not None:
                 gate = RequestGate(store, client, config)
                 app.state.gate = gate
-                catalog = CoinCatalog(store, gate, transport=catalog_transport)
+                catalog = CoinCatalog(store, gate, transport=catalog_transport, settings=config)
                 collectors = Collectors(store, gate, config, catalog=catalog)
                 app.state.collectors = collectors
                 if run_scheduler:
@@ -289,7 +289,7 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
 
     @app.put("/coin-catalog/settings", response_model=s.CatalogSettingsInput, dependencies=auth)
     def put_catalog_settings(body: s.CatalogSettingsInput, db: DB):
-        row = db.merge(CatalogSettings(key="matching", failure_limit=body.failure_limit))
+        row = db.merge(CatalogSettings(key="matching", **body.model_dump()))
         db.flush()
         return row
 

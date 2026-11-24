@@ -23,6 +23,80 @@ def address(n):
     return f"0x{n:040x}"
 
 
+@pytest.mark.parametrize("configured", [False, True])
+def test_catalog_proxy_and_sanitized_failure(core, settings, monkeypatch, caplog, configured):
+    from pydantic import SecretStr
+    from tokenwatch import coins
+    store, fake, clock, gate, _ = core
+    proxy = "socks5h://user:password@proxy.invalid:1234"
+    settings.binance_proxy_url = SecretStr(proxy) if configured else None
+    seen, calls = [], []
+    original = httpx.AsyncClient
+
+    def client(**kwargs):
+        seen.append(kwargs.pop("proxy"))
+        return original(**kwargs)
+
+    def response(request):
+        calls.append(request)
+        return httpx.Response(451, text=proxy + "?secret=hidden")
+
+    monkeypatch.setattr(coins.httpx, "AsyncClient", client)
+    catalog = CoinCatalog(store, gate, httpx.MockTransport(response), clock, settings)
+    with store.begin() as db:
+        db.add(CatalogSettings(key="matching", failure_limit=3, refresh_retry_seconds=42))
+        job = Job(kind="coin_catalog", account_id=None, enabled=True, interval_seconds=604800)
+        db.add(job)
+        db.flush()
+        job_id = job.id
+    scheduler = Scheduler(store, settings, {"coin_catalog": catalog.refresh}, clock, gate)
+    asyncio.run(scheduler.run_job(job))
+    with store() as db:
+        error = db.get(CatalogCache, "binance").error
+        saved = db.get(Job, job_id)
+        assert saved.next_run == clock() + 42
+        assert saved.last_error == error
+    assert seen == [proxy if configured else None]
+    assert len(calls) == 1 and not fake.calls
+    assert "spot exchangeInfo" in error and "451" in error and "HTTPStatusError" in error
+    assert len(error) <= 200 and proxy not in error and proxy not in caplog.text
+    with TestClient(create_app(settings, run_scheduler=False)) as api:
+        result = api.get("/coin-catalog", headers={"Authorization": "Bearer test-token"})
+        assert proxy not in result.text and result.json()["error"] == error
+
+
+def test_catalog_5xx_retry_and_missing_setting(core, settings, monkeypatch):
+    from tokenwatch import coins
+    store, _, clock, gate, _ = core
+    calls, sleeps = [], []
+    async def sleep(delay):
+        sleeps.append(delay)
+    original = coins.public_json
+    async def fast(client, url):
+        return await original(client, url, sleep)
+    monkeypatch.setattr(coins, "public_json", fast)
+    def response(request):
+        calls.append(request)
+        return httpx.Response(500)
+    catalog = CoinCatalog(store, gate, httpx.MockTransport(response), clock, settings)
+    with pytest.raises(coins.MissingCatalogRefreshRetry):
+        asyncio.run(catalog.refresh(SimpleNamespace(wait_reason=None)))
+    assert not calls
+    error = asyncio.run(catalog.refresh_snapshot())
+    assert len(calls) == 3 and sleeps == [30, 60] and "500" in error
+
+
+@pytest.mark.parametrize("proxy", ["ftp://secret@host:1", "socks5h://secret@:123", "http://secret@host", "https://secret@host:99999"])
+def test_invalid_catalog_proxy_is_redacted(settings, proxy):
+    from pydantic import ValidationError
+    from tokenwatch.config import Settings
+    values = settings.model_dump()
+    values["binance_proxy_url"] = proxy
+    with pytest.raises(ValidationError) as error:
+        Settings.model_validate(values)
+    assert proxy not in str(error.value) and "Invalid Binance proxy URL" in str(error.value)
+
+
 def envelope(data):
     return {"code": "000000", "data": data}
 
@@ -150,7 +224,7 @@ def test_catalog_rules_futures_identity_and_fallback(core):
         cache = db.get(CatalogCache, "binance")
         assert cache.payload == snapshot
         assert cache.refreshed_at == 1000 and cache.attempted_at == 1010
-        assert "isSpotTradingAllowed" in cache.error
+        assert "ValueError" in cache.error
     assert not fake.calls
 
 
@@ -164,8 +238,11 @@ def search(*tokens):
 
 def configure_matching(settings):
     with TestClient(create_app(settings, run_scheduler=False)) as client:
-        assert client.put("/coin-catalog/settings", json={"failure_limit": 3},
-                          headers={"Authorization": "Bearer test-token"}).status_code == 200
+        headers = {"Authorization": "Bearer test-token"}
+        assert client.put("/coin-catalog/settings", json={"failure_limit": 3}, headers=headers).status_code == 422
+        values = {"failure_limit": 3, "refresh_retry_seconds": 60}
+        assert client.put("/coin-catalog/settings", json=values, headers=headers).json() == values
+        assert client.get("/coin-catalog/settings", headers=headers).json() == values
 
 
 def test_search_matches_realistic_responses():
@@ -239,7 +316,7 @@ def pending(db, id, chain, contract):
 def test_catalog_pass_rechecks_job_and_resumes(core, settings, change):
     store, fake, clock, gate, _ = core
     with store.begin() as db:
-        db.add(CatalogSettings(key="matching", failure_limit=3))
+        db.add(CatalogSettings(key="matching", failure_limit=3, refresh_retry_seconds=60))
         for i in range(3):
             pending(db, f"p{i}", "1", f"contract{i}")
         job = Job(kind="coin_catalog", account_id="a", enabled=True, interval_seconds=604800,
@@ -258,8 +335,12 @@ def test_catalog_pass_rechecks_job_and_resumes(core, settings, change):
         return search()
 
     fake.get_json = upstream
-    catalog = CoinCatalog(store, gate, transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
+    catalog = CoinCatalog(store, gate, transport=mock_feeds(catalog_feeds(), []),
                           clock=clock)
+    # This test isolates job rechecks during matching; do not add catalog coins on resume.
+    async def refresh_snapshot():
+        return None
+    catalog.refresh_snapshot = refresh_snapshot
     scheduler = Scheduler(store, settings, {"coin_catalog": catalog.refresh}, clock, gate=gate)
     app = create_app(settings, run_scheduler=False)
     app.state.store, app.state.settings = store, settings
@@ -750,5 +831,5 @@ def test_migrate_v4_preserves_coin(tmp_path):
     store = open_store(path)
     with store() as db:
         assert db.get(Coin, "old").searched_deployments == []
-        assert db.scalar(text("PRAGMA user_version")) == 5
+        assert db.scalar(text("PRAGMA user_version")) == 6
     store.kw["bind"].dispose()

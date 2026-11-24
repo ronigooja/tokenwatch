@@ -3087,12 +3087,18 @@
             "type": "integer",
             "exclusiveMinimum": 0.0,
             "title": "Failure Limit"
+          },
+          "refresh_retry_seconds": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Refresh Retry Seconds"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "failure_limit"
+          "failure_limit",
+          "refresh_retry_seconds"
         ],
         "title": "CatalogSettingsInput"
       },

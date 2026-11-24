@@ -62,6 +62,7 @@ class CoinOut(Schema):
 
 class CatalogSettingsInput(Schema):
     failure_limit: Annotated[int, Field(gt=0, strict=True)]
+    refresh_retry_seconds: Annotated[int, Field(gt=0, strict=True)]
 
 
 class CatalogStatus(Schema):

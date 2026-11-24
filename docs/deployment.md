@@ -1,5 +1,7 @@
 # Deployment
 
+Set the optional `binance_proxy_url` secret in `/etc/tokenwatch/config.local.toml` or `TOKENWATCH_BINANCE_PROXY_URL` to a `socks5`, `socks5h`, `http`, or `https` proxy URL with host and port. Its exit must be in a region Binance serves. Unset means direct requests. Restart the service after changing it. SOCKS support is provided by the server's `httpx[socks]` dependency; `socks5h` resolves destination names through the proxy. Configure `refresh_retry_seconds` through `/coin-catalog/settings`; see [coin list](architecture.md#coin-list) for refresh and HTTP 403/451 retry behavior.
+
 - Host: Linux with Python 3.11 and the fingerprint-chromium 150 Linux build. On Debian 12 install `xvfb`, `openbox`, `x11vnc`, `novnc`, `websockify`, `sqlite3`, `fonts-crosextra-carlito`, `fonts-liberation`, `python3-venv`, `libnspr4`, `libnss3`, `libatk1.0-0`, `libatk-bridge2.0-0`, `libxkbcommon0`, `libasound2`, `libgbm1`, `libxcomposite1`, and `libatspi2.0-0`.
 - Display: install the [Xvfb](../deploy/tokenwatch-xvfb.service), [Openbox](../deploy/tokenwatch-openbox.service), [x11vnc](../deploy/tokenwatch-x11vnc.service), and [noVNC](../deploy/tokenwatch-novnc.service) units. Start them in that order, then start [tokenwatch](../deploy/tokenwatch.service). They share the `tokenwatch` user's virtual display `:77`.
 - Layout: code in `/opt/tokenwatch`, virtualenv in `/opt/tokenwatch/venv`, private config in `/etc/tokenwatch` (mode 600, owned by the `tokenwatch` user).

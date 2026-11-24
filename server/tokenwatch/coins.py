@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import re
 import time
 from collections import defaultdict
@@ -19,6 +20,9 @@ FUTURES_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 SEARCH_PATH = "/intelligence/search"
 EVM = re.compile(r"0x[0-9a-f]{40}", re.IGNORECASE)
 PRICING_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}")
+logger = logging.getLogger(__name__)
+FEEDS = (("spot exchangeInfo", SPOT_URL), ("alpha token list", ALPHA_URL),
+         ("network coins", NETWORK_URL), ("asset list", ASSET_URL), ("futures exchangeInfo", FUTURES_URL))
 
 
 async def public_json(client, url, sleep=asyncio.sleep):
@@ -27,8 +31,8 @@ async def public_json(client, url, sleep=asyncio.sleep):
             response = await client.get(url)
             response.raise_for_status()
             return response.json()
-        except (httpx.HTTPError, ValueError):
-            if attempt == 2:
+        except (httpx.HTTPError, ValueError) as exc:
+            if attempt == 2 or isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (403, 451):
                 raise
             await sleep(30 * 2 ** attempt)
 
@@ -240,23 +244,30 @@ def sync_coin(db, coin):
 
 
 class CoinCatalog:
-    def __init__(self, store, gate, transport=None, clock=time.time):
+    def __init__(self, store, gate, transport=None, clock=time.time, settings=None):
         self.store, self.gate, self.transport, self.clock = store, gate, transport, clock
+        self.settings = settings
         self.refresh_lock, self.match_lock = asyncio.Lock(), asyncio.Lock()
 
     async def refresh_snapshot(self):
         async with self.refresh_lock:
             stamp = self.clock()
+            feed = "client"
             try:
-                async with httpx.AsyncClient(timeout=20, transport=self.transport) as client:
-                    feeds = [await public_json(client, url)
-                             for url in (SPOT_URL, ALPHA_URL, NETWORK_URL, ASSET_URL, FUTURES_URL)]
+                proxy = getattr(self.settings, "binance_proxy_url", None)
+                async with httpx.AsyncClient(timeout=20, transport=self.transport,
+                                             proxy=proxy.get_secret_value() if proxy else None) as client:
+                    feeds = []
+                    for feed, url in FEEDS:
+                        feeds.append(await public_json(client, url))
+                feed = "catalog"
                 snapshot = parse_feeds(*feeds)
                 error = None
-            except httpx.HTTPError:
-                snapshot, error = None, "Binance catalog request failed"
+            except httpx.HTTPError as exc:
+                status = f" HTTP {exc.response.status_code}" if isinstance(exc, httpx.HTTPStatusError) else ""
+                snapshot, error = None, f"Binance {feed}: {type(exc).__name__}{status}"[:200]
             except ValueError as exc:
-                snapshot, error = None, f"Invalid Binance catalog: {exc}"
+                snapshot, error = None, f"Invalid Binance {feed}: {type(exc).__name__}"[:200]
             with self.store.begin() as db:
                 cache = db.get(CatalogCache, "binance")
                 if cache is None:
@@ -274,6 +285,9 @@ class CoinCatalog:
                 if snapshot is not None:
                     cache.payload, cache.refreshed_at = snapshot, stamp
                 self.reclassify(db, cache.payload)
+            if error:
+                logger.warning("%s", error)
+            return error
 
     @staticmethod
     def reclassify(db, snapshot):
@@ -303,7 +317,14 @@ class CoinCatalog:
 
     async def refresh(self, job):
         if not getattr(job, "wait_reason", None):
-            await self.refresh_snapshot()
+            with self.store() as db:
+                setting = db.get(CatalogSettings, "matching")
+                if setting is None or setting.refresh_retry_seconds is None or setting.refresh_retry_seconds < 1:
+                    raise MissingCatalogRefreshRetry()
+                retry = setting.refresh_retry_seconds
+            error = await self.refresh_snapshot()
+            if error:
+                raise CatalogRefreshFailure(error, self.clock() + retry)
         fields = ("account_id", "kind", "options", "interval_seconds", "coin_id")
         while not self.gate.closing:
             with self.store() as db:
@@ -406,3 +427,12 @@ class CoinCatalog:
 
 class MissingCatalogFailureLimit(Exception):
     """Matching requires an explicitly configured failure limit."""
+
+
+class MissingCatalogRefreshRetry(Exception):
+    """Catalog refresh requires an explicitly configured retry delay."""
+
+
+class CatalogRefreshFailure(Exception):
+    def __init__(self, error, retry_at):
+        self.error, self.retry_at = error, retry_at

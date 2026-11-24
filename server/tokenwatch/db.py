@@ -42,6 +42,7 @@ class CatalogSettings(Base):
     __tablename__ = "catalog_settings"
     key: Mapped[str] = mapped_column(primary_key=True)
     failure_limit: Mapped[int]
+    refresh_retry_seconds: Mapped[int | None]
 
 
 class CoinMapping(Base):
@@ -281,7 +282,7 @@ def open_store(path: Path):
             Base.metadata.create_all(connection)
         elif version == 1:
             migrate_v1(connection)
-        elif version not in (2, 3, 4, 5):
+        elif version not in (2, 3, 4, 5, 6):
             raise RuntimeError(f"Unsupported database schema version: {version}")
         if version == 2:
             connection.exec_driver_sql("ALTER TABLE jobs ADD COLUMN last_error VARCHAR")
@@ -291,9 +292,13 @@ def open_store(path: Path):
             CatalogSettings.__table__.create(connection, checkfirst=True)
         if version in (2, 3, 4):
             connection.exec_driver_sql("ALTER TABLE coins ADD COLUMN searched_deployments JSON NOT NULL DEFAULT '[]'")
+        if version in (2, 3, 4, 5) and "refresh_retry_seconds" not in {
+            row[1] for row in connection.exec_driver_sql("PRAGMA table_info(catalog_settings)")
+        }:
+            connection.exec_driver_sql("ALTER TABLE catalog_settings ADD COLUMN refresh_retry_seconds INTEGER")
         if version == 1 and connection.exec_driver_sql("PRAGMA foreign_key_check").first():
             raise RuntimeError("Foreign key violation after coin schema migration")
-        connection.execute(text("PRAGMA user_version=5"))
+        connection.execute(text("PRAGMA user_version=6"))
         connection.commit()
         connection.execute(text("PRAGMA foreign_keys=ON"))
     return sessionmaker(engine, expire_on_commit=False)

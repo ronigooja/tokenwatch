@@ -1,6 +1,7 @@
 database = "tokenwatch.db"
 bearer_token = ""
 signing_key = ""
+# binance_proxy_url = ""
 upstream_factory = "tokenwatch.browser.factory:browser_upstream"
 browser_config = "browser.local.toml"
 # Browser request_timeout, close_timeout and blocked screenshot options belong in the private browser config; see its example.

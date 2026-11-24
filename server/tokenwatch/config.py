@@ -1,16 +1,18 @@
 import os
 import tomllib
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 
 class Settings(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, hide_input_in_errors=True)
 
     database: Path = Path("tokenwatch.db")
     bearer_token: SecretStr = Field(min_length=1)
     signing_key: SecretStr = Field(min_length=1)
+    binance_proxy_url: SecretStr | None = None
     upstream_factory: str = ""
     browser_config: Path = Path("browser.local.toml")
     request_interval: float = Field(default=30, gt=0)
@@ -26,6 +28,18 @@ class Settings(BaseModel):
     vnc_password: SecretStr | None = None
     login_timeout: float = Field(default=900, gt=0)
     shutdown_grace_seconds: float = Field(default=30, ge=0)
+
+    @field_validator("binance_proxy_url")
+    @classmethod
+    def validate_binance_proxy(cls, value):
+        if value is not None:
+            try:
+                parts = urlsplit(value.get_secret_value())
+                if parts.scheme not in ("socks5", "socks5h", "http", "https") or not parts.hostname or not parts.port:
+                    raise ValueError
+            except ValueError:
+                raise ValueError("Invalid Binance proxy URL: expected a supported scheme, host and port") from None
+        return value
 
     @model_validator(mode="after")
     def validate_ranges(self):

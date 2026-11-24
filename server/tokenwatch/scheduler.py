@@ -11,6 +11,7 @@ from sqlalchemy import and_, delete, or_, select
 
 from .db import Account, Job, Snapshot, Transfer, now
 from .browser.client import _BrowserFailure
+from .coins import CatalogRefreshFailure
 from .rules import alert
 from .upstream import AuthRequired, BadResponse, Blocked, RateLimited, RequestRejected, UNSUPPORTED_TOKEN, UpstreamError
 
@@ -234,6 +235,8 @@ class Scheduler:
                 next_run = scheduled
         except DistributionWait as exc:
             next_run, wait_reason = exc.retry_at, exc.reason
+        except CatalogRefreshFailure as exc:
+            next_run, last_error = exc.retry_at, exc.error[:200]
         except AccountUnavailable:
             next_run = self.clock()
         except UpstreamError as exc:
