@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import signal
 import sys
 from contextlib import suppress
 from dataclasses import dataclass
@@ -14,6 +15,51 @@ SITE_URL = "https://arkm.com/"
 LOGIN_URL = "https://arkm.com/login?redirectDomain=https://arkm.com"
 REGISTER_URL = "https://arkm.com/register?redirectDomain=https://arkm.com"
 API_ORIGIN = "https://api.arkm.com"
+
+
+def _profile_processes(profile: Path, proc: Path = Path("/proc")):
+    """Return PID/start-time pairs only for exact profile arguments on Linux."""
+    result = []
+    marker = f"--user-data-dir={profile.resolve()}".encode()
+    try:
+        entries = list(proc.iterdir())
+    except OSError:
+        return result
+    for entry in entries:
+        if not entry.name.isdecimal():
+            continue
+        try:
+            args = (entry / "cmdline").read_bytes().split(b"\0")
+            if marker in args:
+                stat = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+                result.append((int(entry.name), stat[19]))
+        except (OSError, IndexError, ValueError):
+            continue
+    return result
+
+
+async def force_kill_browser(profile: Path, session=None, *, lister=_profile_processes, kill=os.kill):
+    """Best-effort exact-profile cleanup; recheck identity before each signal."""
+    try:
+        targets = set(lister(profile))
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            current = set(lister(profile))
+            for pid, started in targets & current:
+                with suppress(OSError, ValueError):
+                    kill(pid, sig)
+            if sig == signal.SIGTERM and targets:
+                await asyncio.sleep(0.05)
+        # Playwright's private transport may expose its own driver process.
+        driver = getattr(session, "_driver", None)
+        connection = getattr(getattr(driver, "_impl_obj", None), "_connection", None)
+        process = getattr(getattr(connection, "_transport", None), "_proc", None)
+        if process is not None and process.returncode is None:
+            with suppress(ProcessLookupError, OSError):
+                process.kill()
+            with suppress(Exception):
+                await asyncio.wait_for(process.wait(), 0.1)
+    except Exception:
+        pass
 
 
 @dataclass(frozen=True, slots=True)

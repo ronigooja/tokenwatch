@@ -7,6 +7,8 @@ max_instances = 1
 idle_timeout = 60
 # Total browser request deadline in seconds; must exceed the 30-second in-page fetch timeout.
 request_timeout = 120
+# Total time allowed for browser and proxy close before forced cleanup.
+close_timeout = 5
 cf_wait_seconds = 30
 # Seconds per load-state wait; 0 disables settling and the recovery wait.
 page_settle_seconds = 15

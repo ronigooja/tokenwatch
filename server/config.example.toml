@@ -3,7 +3,7 @@ bearer_token = ""
 signing_key = ""
 upstream_factory = "tokenwatch.browser.factory:browser_upstream"
 browser_config = "browser.local.toml"
-# Blocked screenshot options belong in the private browser config; see its example.
+# Browser request_timeout, close_timeout and blocked screenshot options belong in the private browser config; see its example.
 request_interval = 30.0
 request_jitter = 10.0
 backoff_initial = 60.0

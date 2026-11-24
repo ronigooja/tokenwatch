@@ -66,6 +66,7 @@ class BrowserConfig:
     signing_key: str = field(repr=False)
     accounts: tuple[AccountConfig, ...]
     request_timeout: float
+    close_timeout: float
     max_instances: int = 1
     idle_timeout: float = 60
     cf_wait_seconds: float = 30
@@ -76,6 +77,8 @@ class BrowserConfig:
     blocked_screenshot_keep: int | None = None
 
     def __post_init__(self) -> None:
+        if type(self.close_timeout) not in (int, float) or not math.isfinite(self.close_timeout) or self.close_timeout <= 0:
+            raise ValueError("close_timeout must be positive and finite")
         if type(self.request_timeout) not in (int, float) or not math.isfinite(self.request_timeout) or self.request_timeout <= 30:
             raise ValueError("request_timeout must be positive and finite and greater than the 30-second in-page fetch timeout")
         if self.blocked_screenshot_dir is not None and (type(self.blocked_screenshot_keep) is not int or self.blocked_screenshot_keep < 1):
@@ -100,6 +103,8 @@ class BrowserConfig:
                 data = tomllib.load(source)
             if "request_timeout" not in data:
                 raise ValueError("request_timeout is required and must be positive and finite and greater than the 30-second in-page fetch timeout")
+            if "close_timeout" not in data:
+                raise ValueError("close_timeout is required and must be positive and finite")
             if signing_key is not None:
                 data["signing_key"] = signing_key
             for name in ("binary_path", "profiles_root"):
@@ -116,7 +121,7 @@ class BrowserConfig:
             data["managed_ids"] = frozenset(account["id"] for account in managed)
             return cls(**data)
         except ValueError as error:
-            if "blocked_screenshot_keep" in str(error) or "request_timeout" in str(error):
+            if any(key in str(error) for key in ("blocked_screenshot_keep", "request_timeout", "close_timeout")):
                 raise
         except (OSError, KeyError, TypeError, OverflowError):
             pass

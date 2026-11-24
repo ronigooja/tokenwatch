@@ -16,7 +16,7 @@ SIGNATURE = "685c717afc86f9c28a216b2bfd06d1009bd6e7fc064d8ad2d7302864d27b9169"
 PROXY = "socks5h://mock-user:mock-password@proxy.example:1080"
 CONFIG = BrowserConfig(Path("chrome"), Path("profiles"), "test-key", (
     AccountConfig("one", PROXY, 1), AccountConfig("two", PROXY, 2),
-), request_timeout=60)
+), request_timeout=60, close_timeout=1)
 
 
 class FakeForward:
@@ -101,6 +101,11 @@ class FakeLauncher:
 
 
 class ResponseTests(unittest.TestCase):
+    def test_close_timeout_validation(self):
+        for value in (0, -1, float('nan'), True):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "close_timeout"):
+                replace(CONFIG, close_timeout=value)
+
     def test_request_timeout_validation(self):
         for value in (0, -1, float('nan'), True, 30, 1):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "request_timeout.*30-second"):
@@ -157,6 +162,105 @@ class ResponseTests(unittest.TestCase):
 
 
 class ClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_hung_close_is_bounded_and_relaunches(self):
+        from unittest.mock import patch, AsyncMock
+        from tokenwatch.browser.client import _BrowserFailure
+        first, second = FakeSession(), FakeSession()
+        first.resume.clear()
+        async def close(): await asyncio.Future()
+        first.close = close
+        client, launcher, _ = self.client(first, second)
+        object.__setattr__(client._config, "request_timeout", 0.02)
+        object.__setattr__(client._config, "close_timeout", 0.02)
+        with patch("tokenwatch.browser.transport.force_kill_browser", new_callable=AsyncMock) as kill:
+            with self.assertRaises(_BrowserFailure):
+                await asyncio.wait_for(client.get_json("one", "/user"), 1)
+            kill.assert_awaited_once_with(Path("profiles/one"), first)
+            self.assertNotIn("one", client._instances)
+            self.assertFalse(client._locks["one"].locked())
+            self.assertEqual(await client.get_json("one", "/user"), [])
+            self.assertEqual(len(launcher.launches), 2)
+
+    async def test_queue_excluded_from_deadline(self):
+        first, second = FakeSession(), FakeSession()
+        first.resume.clear()
+        client, _, _ = self.client(first, second)
+        object.__setattr__(client._config, "request_timeout", 0.04)
+        async with client._locks["one"]:
+            task = asyncio.create_task(client.get_json("one", "/user"))
+            await asyncio.sleep(0.07)
+            self.assertFalse(task.done())
+        first.resume.set()
+        self.assertEqual(await task, [])
+
+    async def test_slot_queue_excluded_from_deadline(self):
+        first, second = FakeSession(), FakeSession()
+        first.resume.clear()
+        client, _, _ = self.client(first, second)
+        object.__setattr__(client._config, "request_timeout", 0.2)
+        task1 = asyncio.create_task(client.get_json("one", "/user"))
+        await first.started.wait()
+        task2 = asyncio.create_task(client.get_json("two", "/user"))
+        await asyncio.sleep(0.25)
+        # The first request times out, releasing its slot; the second then runs.
+        from tokenwatch.browser.client import _BrowserFailure
+        with self.assertRaises(_BrowserFailure):
+            await task1
+        self.assertEqual(await task2, [])
+
+    async def test_shutdown_hung_close_and_external_cancellation(self):
+        from unittest.mock import patch, AsyncMock
+        first = FakeSession()
+        started = asyncio.Event()
+        async def close():
+            started.set()
+            await asyncio.Future()
+        first.close = close
+        client, _, _ = self.client(first)
+        object.__setattr__(client._config, "close_timeout", 0.02)
+        await client.get_json("one", "/user")
+        with patch("tokenwatch.browser.transport.force_kill_browser", new_callable=AsyncMock):
+            await asyncio.wait_for(client.aclose(), 1)
+        second = FakeSession()
+        second.close = close
+        client2, _, _ = self.client(second)
+        await client2.get_json("one", "/user")
+        started.clear()
+        with patch("tokenwatch.browser.transport.force_kill_browser", new_callable=AsyncMock):
+            task = asyncio.create_task(client2.aclose())
+            await started.wait()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+    async def test_start_hang_times_out(self):
+        from tokenwatch.browser.client import _BrowserFailure
+        session = FakeSession()
+        async def hang(): await asyncio.Future()
+        session.open_site = hang
+        client, _, _ = self.client(session)
+        object.__setattr__(client._config, "request_timeout", 0.02)
+        with self.assertRaises(_BrowserFailure):
+            await asyncio.wait_for(client.get_json("one", "/user"), 1)
+        self.assertTrue(session.closed.is_set())
+
+    async def test_force_kill_exact_profile(self):
+        import signal
+        from tempfile import TemporaryDirectory
+        from tokenwatch.browser.transport import _profile_processes, force_kill_browser
+        with TemporaryDirectory() as root:
+            proc = Path(root)
+            for pid, profile in ((123, "/profiles/one"), (124, "/profiles/two")):
+                entry = proc / str(pid)
+                entry.mkdir()
+                (entry / "cmdline").write_bytes(f"chrome\0--user-data-dir={profile}\0".encode())
+                (entry / "stat").write_text(f"{pid} (chrome) " + " ".join(["S"] + ["0"] * 18 + ["77"]))
+            calls = []
+            await force_kill_browser(Path("/profiles/one"), lister=lambda p: _profile_processes(p, proc),
+                                     kill=lambda pid, sig: calls.append((pid, sig)))
+            self.assertEqual(calls, [(123, signal.SIGTERM), (123, signal.SIGKILL)])
+            self.assertEqual(_profile_processes(Path("/profiles/one"), proc / "missing"), [])
+
     async def test_timeout_drops_and_relaunches(self):
         from tokenwatch.browser.client import _BrowserFailure
         for phase in ("fetch", "settle"):

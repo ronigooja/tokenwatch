@@ -210,10 +210,10 @@ class BrowserUpstreamClient:
         if any(part in (".", "..") for part in path.split("/")):
             raise BadResponse("Invalid upstream URL path")
         url = API_ORIGIN + path + (f"?{urlencode(params)}" if params else "")
-        timeout = asyncio.timeout(self._config.request_timeout)
+        timeout = asyncio.timeout(None)
         try:
             async with timeout:
-                async with self._lease(account_id) as instance:
+                async with self._lease(account_id, deadline=timeout) as instance:
                     now = self._clock()
                     timestamp = int(now)
                     headers = {
@@ -327,7 +327,7 @@ class BrowserUpstreamClient:
             if not ready:
                 if not forward.alive:
                     self._failed_proxies.add(account.id)
-                await self._shutdown(session, forward)
+                await self._shutdown(account.id, session, forward)
 
     async def _wait_for_challenge(self, session: BrowserSession, forward: Forward) -> None:
         async def challenged() -> bool:
@@ -349,15 +349,27 @@ class BrowserUpstreamClient:
                 pass
         raise Blocked("Browser Cloudflare challenge did not clear", cause="challenge_timeout")
 
-    @staticmethod
-    async def _shutdown(session: BrowserSession | None, forward: Forward) -> None:
+    async def _shutdown(self, account_id: str, session: BrowserSession | None, forward: Forward) -> None:
+        from .transport import force_kill_browser
+
+        tasks = [asyncio.create_task(forward.close())]
+        if session is not None:
+            tasks.append(asyncio.create_task(session.close()))
         try:
-            if session is not None:
-                with suppress(Exception):
-                    await session.close()
+            done, pending = await asyncio.wait(tasks, timeout=self._config.close_timeout)
+            failed = bool(pending) or any(task.cancelled() or task.exception() for task in done)
+        except asyncio.CancelledError:
+            failed = True
+            raise
         finally:
-            with suppress(Exception):
-                await forward.close()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+                else:
+                    with suppress(BaseException):
+                        task.result()
+            if locals().get("failed", True):
+                await force_kill_browser(self._config.profiles_root / account_id, session)
 
     async def _drop(self, account_id: str, instance: _Instance) -> None:
         del self._instances[account_id]
@@ -368,7 +380,7 @@ class BrowserUpstreamClient:
         if not instance.forward.alive:
             self._failed_proxies.add(account_id)
         try:
-            await self._shutdown(instance.session, instance.forward)
+            await self._shutdown(account_id, instance.session, instance.forward)
         finally:
             self._changed.notify_all()
 
@@ -386,7 +398,7 @@ class BrowserUpstreamClient:
                 await self._drop(account_id, instance)
 
     @asynccontextmanager
-    async def _lease(self, account_id: str, *, interactive: bool = False):
+    async def _lease(self, account_id: str, *, interactive: bool = False, deadline=None):
         account = self._accounts.get(account_id)
         if account is None:
             raise BadResponse("Unknown browser account")
@@ -401,6 +413,8 @@ class BrowserUpstreamClient:
                         raise Blocked("Local proxy stopped", cause="forwarder_stopped")
                     instance = self._instances.get(account_id)
                     if instance is not None:
+                        if deadline is not None:
+                            deadline.reschedule(asyncio.get_running_loop().time() + self._config.request_timeout)
                         if not instance.forward.alive:
                             exc = Blocked("Local proxy stopped", cause="forwarder_stopped")
                             await self._blocked_capture(account_id, instance.session, exc)
@@ -413,6 +427,8 @@ class BrowserUpstreamClient:
                             self._interactive.add(account_id)
                         break
                     if interactive or len(self._instances.keys() - self._interactive) + self._starting < self._config.max_instances:
+                        if deadline is not None:
+                            deadline.reschedule(asyncio.get_running_loop().time() + self._config.request_timeout)
                         if interactive:
                             self._interactive.add(account_id)
                         else:

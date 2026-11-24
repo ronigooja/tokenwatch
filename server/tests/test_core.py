@@ -131,7 +131,7 @@ def test_browser_timeout_gate_and_next_account(core, tmp_path):
     async def run():
         config = BrowserConfig(Path("chrome"), tmp_path, "key", tuple(
             AccountConfig(key, "socks5h://u:p@proxy.example:1080", 1) for key in ("a", "b")),
-            request_timeout=60, page_settle_seconds=0)
+            request_timeout=60, close_timeout=1, page_settle_seconds=0)
         object.__setattr__(config, "request_timeout", 0.02)
         launcher = Launcher()
         client = BrowserUpstreamClient(config, launcher=launcher, forwarder=Forwarder())
@@ -187,7 +187,7 @@ def test_browser_pause_diagnostics_and_screenshots(core, settings, tmp_path, cap
         async def launch(self, *args): return self.session
 
     config = BrowserConfig(Path("chrome"), tmp_path / "profiles", "key", (
-        AccountConfig("a", "socks5h://user:password@proxy.example:1080", 1),), request_timeout=60, page_settle_seconds=0)
+        AccountConfig("a", "socks5h://user:password@proxy.example:1080", 1),), request_timeout=60, close_timeout=1, page_settle_seconds=0)
     async def run_case(session, browser_config, *, job=False):
         with store.begin() as db:
             account = db.get(Account, "a")
