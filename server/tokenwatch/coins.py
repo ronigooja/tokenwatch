@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import httpx
 from sqlalchemy import select
 
-from .db import CatalogCache, CatalogExclusion, CatalogSettings, ChainObservation, Coin, CoinMapping, Exclusion, FuturesMapping
+from .db import CatalogCache, CatalogExclusion, CatalogSettings, ChainObservation, Coin, CoinMapping, Exclusion, FuturesMapping, Job
 from .upstream import BadResponse, UpstreamError, TOKEN_ADDRESSES_PREFIX, UNSUPPORTED_TOKEN
 
 
@@ -303,8 +303,17 @@ class CoinCatalog:
     async def refresh(self, job):
         if not getattr(job, "wait_reason", None):
             await self.refresh_snapshot()
-        while await self.match_next(job):
-            pass
+        fields = ("account_id", "kind", "options", "interval_seconds", "coin_id")
+        while not self.gate.closing:
+            with self.store() as db:
+                current = db.execute(select(Job.enabled, *(getattr(Job, field) for field in fields))
+                                     .where(Job.id == job.id)).first()
+            if not current or not current.enabled or any(
+                getattr(current, field) != getattr(job, field) for field in fields
+            ):
+                return
+            if not await self.match_next(job):
+                return
 
     async def match_next(self, job):
         async with self.match_lock:

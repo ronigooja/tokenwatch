@@ -12,7 +12,7 @@ from tokenwatch.api import create_app
 from tokenwatch.browser.client import _decode
 from tokenwatch.browser.transport import Response
 from tokenwatch.coins import ALPHA_URL, ASSET_URL, FUTURES_URL, NETWORK_URL, SPOT_URL, CoinCatalog
-from tokenwatch.db import (Account, CatalogCache, CatalogExclusion, ChainObservation, Coin, CoinMapping,
+from tokenwatch.db import (Account, CatalogCache, CatalogExclusion, CatalogSettings, ChainObservation, Coin, CoinMapping,
                            DailyCollection, Event, FuturesMapping, Job, PushLog, Snapshot, Transfer, TransferCoin,
                            now, open_store)
 from tokenwatch.scheduler import Scheduler
@@ -233,6 +233,84 @@ def pending(db, id, chain, contract):
     db.add(Coin(id=id, symbol="SAME", sources=["alpha"], deployments=[{"feed": "alpha", "chain": chain, "address": contract,
                                                                     "deposit_enabled": None, "withdraw_enabled": None}],
                 status="pending_match"))
+
+
+@pytest.mark.parametrize("change", ["disable", "account", "delete", "options", "interval", "kind", "coin", "closing", "unchanged"])
+def test_catalog_pass_rechecks_job_and_resumes(core, settings, change):
+    store, fake, clock, gate, _ = core
+    with store.begin() as db:
+        db.add(CatalogSettings(key="matching", failure_limit=3))
+        for i in range(3):
+            pending(db, f"p{i}", "1", f"contract{i}")
+        job = Job(kind="coin_catalog", account_id="a", enabled=True, interval_seconds=604800,
+                  wait_reason="retry", last_error="previous")
+        db.add(job)
+        db.flush()
+        job_id = job.id
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def upstream(account_id, path, params):
+        fake.calls.append((account_id, path, params))
+        if len(fake.calls) == 1:
+            entered.set()
+            await release.wait()
+        return search()
+
+    fake.get_json = upstream
+    catalog = CoinCatalog(store, gate, transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
+                          clock=clock)
+    scheduler = Scheduler(store, settings, {"coin_catalog": catalog.refresh}, clock, gate=gate)
+    app = create_app(settings, run_scheduler=False)
+    app.state.store, app.state.settings = store, settings
+    body = {"kind": "coin_catalog", "account_id": "a", "coin_id": None, "options": {},
+            "interval_seconds": 604800, "enabled": True}
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test",
+                                     headers={"Authorization": "Bearer test-token"}) as client:
+            scheduler.tick()
+            task = scheduler.running["a"]
+            await asyncio.wait_for(entered.wait(), 2)
+            if change == "delete":
+                assert (await client.delete(f"/jobs/{job_id}")).status_code == 204
+            elif change == "closing":
+                gate.closing = True
+            elif change in ("options", "coin"):
+                # These configurations are rejected by the public API but may exist in the store.
+                with store.begin() as db:
+                    current = db.get(Job, job_id)
+                    if change == "options":
+                        current.options = {"test": 1}
+                    else:
+                        current.coin_id = "ABC"
+            elif change != "unchanged":
+                updates = {"disable": {"enabled": False}, "account": {"account_id": "b"},
+                           "interval": {"interval_seconds": 60},
+                           "kind": {"kind": "daily", "options": {"balance_min": 1}}}
+                response = await client.put(f"/jobs/{job_id}", json={**body, **updates[change]})
+                assert response.status_code == 200, response.text
+            release.set()
+            await asyncio.wait_for(task, 2)
+            assert len(fake.calls) == (3 if change == "unchanged" else 1)
+            with store() as db:
+                assert [db.get(Coin, f"p{i}").status for i in range(3)] == (
+                    ["no_match"] * 3 if change == "unchanged" else ["no_match", "pending_match", "pending_match"])
+                if change == "disable":
+                    saved = db.get(Job, job_id)
+                    assert (saved.next_run, saved.last_error) == (0, "previous")
+            if change == "disable":
+                response = await client.put(f"/jobs/{job_id}", json=body)
+                assert response.status_code == 200 and response.json()["next_run"] == 0
+                clock.value += settings.request_interval
+                scheduler.tick()
+                await asyncio.wait_for(scheduler.running["a"], 2)
+                assert [call[2]["query"] for call in fake.calls] == ["contract0", "contract1", "contract2"]
+                with store() as db:
+                    assert all(db.get(Coin, f"p{i}").status == "no_match" for i in range(3))
+                    assert db.get(Job, job_id).last_error is None
+
+    asyncio.run(run())
 
 
 def test_failure_rotation_limit_and_manual_retry(core, settings):
