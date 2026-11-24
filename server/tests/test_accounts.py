@@ -18,7 +18,7 @@ B = "b@example.com"
 @pytest.fixture
 def accounts(tmp_path):
     source = tmp_path / "browser.toml"
-    source.write_text('binary_path = "chrome"\nprofiles_root = "profiles"\n')
+    source.write_text('binary_path = "chrome"\nprofiles_root = "profiles"\nrequest_timeout = 60\n')
     pool = BrowserUpstreamClient(BrowserConfig.from_toml(source, "key"))
     async def detector(account):
         return "America/New_York"

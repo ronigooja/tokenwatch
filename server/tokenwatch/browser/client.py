@@ -210,16 +210,23 @@ class BrowserUpstreamClient:
         if any(part in (".", "..") for part in path.split("/")):
             raise BadResponse("Invalid upstream URL path")
         url = API_ORIGIN + path + (f"?{urlencode(params)}" if params else "")
-        async with self._lease(account_id) as instance:
-            now = self._clock()
-            timestamp = int(now)
-            headers = {
-                "X-Timestamp": str(timestamp),
-                "X-Payload": sign_payload(path, timestamp, self._config.signing_key),
-            }
-            response = await _through(instance.forward, lambda: instance.session.fetch(url, headers),
-                                      getattr(instance.session, "failure_context", None))
-            return _decode(response, self._clock(), path)
+        timeout = asyncio.timeout(self._config.request_timeout)
+        try:
+            async with timeout:
+                async with self._lease(account_id) as instance:
+                    now = self._clock()
+                    timestamp = int(now)
+                    headers = {
+                        "X-Timestamp": str(timestamp),
+                        "X-Payload": sign_payload(path, timestamp, self._config.signing_key),
+                    }
+                    response = await _through(instance.forward, lambda: instance.session.fetch(url, headers),
+                                              getattr(instance.session, "failure_context", None))
+                    return _decode(response, self._clock(), path)
+        except TimeoutError:
+            if not timeout.expired():
+                raise
+            raise _BrowserFailure("TimeoutError: browser request timed out") from None
 
     async def account_status(self, account_id: str) -> str:
         try:
@@ -437,7 +444,11 @@ class BrowserUpstreamClient:
                     raise BadResponse("Browser pool is closed")
                 yield instance
             except Blocked as exc:
-                await self._blocked_capture(account_id, instance.session, exc)
+                try:
+                    await self._blocked_capture(account_id, instance.session, exc)
+                except asyncio.CancelledError:
+                    discard = True
+                    raise
                 raise
             except (_BrowserFailure, asyncio.CancelledError):
                 discard = True

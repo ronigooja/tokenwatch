@@ -65,6 +65,7 @@ class BrowserConfig:
     profiles_root: Path
     signing_key: str = field(repr=False)
     accounts: tuple[AccountConfig, ...]
+    request_timeout: float
     max_instances: int = 1
     idle_timeout: float = 60
     cf_wait_seconds: float = 30
@@ -75,6 +76,8 @@ class BrowserConfig:
     blocked_screenshot_keep: int | None = None
 
     def __post_init__(self) -> None:
+        if type(self.request_timeout) not in (int, float) or not math.isfinite(self.request_timeout) or self.request_timeout <= 30:
+            raise ValueError("request_timeout must be positive and finite and greater than the 30-second in-page fetch timeout")
         if self.blocked_screenshot_dir is not None and (type(self.blocked_screenshot_keep) is not int or self.blocked_screenshot_keep < 1):
             raise ValueError("blocked_screenshot_keep must be a positive integer when blocked_screenshot_dir is set")
         if not isinstance(self.signing_key, str) or not self.signing_key:
@@ -95,6 +98,8 @@ class BrowserConfig:
         try:
             with path.open("rb") as source:
                 data = tomllib.load(source)
+            if "request_timeout" not in data:
+                raise ValueError("request_timeout is required and must be positive and finite and greater than the 30-second in-page fetch timeout")
             if signing_key is not None:
                 data["signing_key"] = signing_key
             for name in ("binary_path", "profiles_root"):
@@ -111,7 +116,7 @@ class BrowserConfig:
             data["managed_ids"] = frozenset(account["id"] for account in managed)
             return cls(**data)
         except ValueError as error:
-            if "blocked_screenshot_keep" in str(error):
+            if "blocked_screenshot_keep" in str(error) or "request_timeout" in str(error):
                 raise
         except (OSError, KeyError, TypeError, OverflowError):
             pass

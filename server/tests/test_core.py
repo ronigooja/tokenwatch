@@ -101,6 +101,56 @@ def test_blocked_gate_diagnostics(core, settings, caplog):
     asyncio.run(run())
 
 
+def test_browser_timeout_gate_and_next_account(core, tmp_path):
+    from tokenwatch.browser import AccountConfig, BrowserConfig, BrowserUpstreamClient
+    from tokenwatch.browser.client import _BrowserFailure
+    from tokenwatch.browser.transport import Response
+
+    store, _, clock, gate, _ = core
+    class Forward:
+        port = 1234
+        alive = True
+        async def wait(self): await asyncio.Future()
+        async def close(self): self.alive = False
+    class Forwarder:
+        async def start(self, account): return Forward()
+    class Session:
+        def __init__(self, hang): self.hang, self.closed = hang, False
+        async def open_site(self): pass
+        async def title(self): return "Arkham"
+        async def fetch(self, url, headers):
+            if self.hang: await asyncio.Future()
+            return Response(200, '{}')
+        async def close(self): self.closed = True
+    class Launcher:
+        def __init__(self): self.calls = []
+        async def launch(self, binary, profile, account, port):
+            session = Session(not self.calls)
+            self.calls.append((account.id, session))
+            return session
+    async def run():
+        config = BrowserConfig(Path("chrome"), tmp_path, "key", tuple(
+            AccountConfig(key, "socks5h://u:p@proxy.example:1080", 1) for key in ("a", "b")),
+            request_timeout=60, page_settle_seconds=0)
+        object.__setattr__(config, "request_timeout", 0.02)
+        launcher = Launcher()
+        client = BrowserUpstreamClient(config, launcher=launcher, forwarder=Forwarder())
+        gate.upstream = client
+        with pytest.raises(_BrowserFailure):
+            await asyncio.wait_for(gate.get(None, "/user", None), 1)
+        with store() as db:
+            assert db.get(Account, "a").failures == 1
+            assert db.get(Account, "a").status == "active"
+        assert not gate.locks["a"].locked()
+        assert launcher.calls[0][1].closed
+        assert await gate.get(None, "/user", None) == {}
+        assert [item[0] for item in launcher.calls] == ["a", "b"]
+        assert await gate.get("a", "/user", None) == {}
+        assert [item[0] for item in launcher.calls] == ["a", "b", "a"]
+        await client.aclose()
+    asyncio.run(run())
+
+
 def test_browser_pause_diagnostics_and_screenshots(core, settings, tmp_path, caplog):
     from dataclasses import replace
     from tokenwatch.browser import AccountConfig, BrowserConfig, BrowserUpstreamClient
@@ -137,7 +187,7 @@ def test_browser_pause_diagnostics_and_screenshots(core, settings, tmp_path, cap
         async def launch(self, *args): return self.session
 
     config = BrowserConfig(Path("chrome"), tmp_path / "profiles", "key", (
-        AccountConfig("a", "socks5h://user:password@proxy.example:1080", 1),), page_settle_seconds=0)
+        AccountConfig("a", "socks5h://user:password@proxy.example:1080", 1),), request_timeout=60, page_settle_seconds=0)
     async def run_case(session, browser_config, *, job=False):
         with store.begin() as db:
             account = db.get(Account, "a")

@@ -16,7 +16,7 @@ SIGNATURE = "685c717afc86f9c28a216b2bfd06d1009bd6e7fc064d8ad2d7302864d27b9169"
 PROXY = "socks5h://mock-user:mock-password@proxy.example:1080"
 CONFIG = BrowserConfig(Path("chrome"), Path("profiles"), "test-key", (
     AccountConfig("one", PROXY, 1), AccountConfig("two", PROXY, 2),
-))
+), request_timeout=60)
 
 
 class FakeForward:
@@ -101,6 +101,13 @@ class FakeLauncher:
 
 
 class ResponseTests(unittest.TestCase):
+    def test_request_timeout_validation(self):
+        for value in (0, -1, float('nan'), True, 30, 1):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "request_timeout.*30-second"):
+                replace(CONFIG, request_timeout=value)
+        with self.assertRaises(TypeError):
+            BrowserConfig(Path("chrome"), Path("profiles"), "key", ())
+
     def test_blocked_response_causes(self):
         for response, cause in ((Response(503, "", cf_mitigated="challenge"), "challenge_response"),
                                 (Response(403, "Just a moment"), "challenge_403")):
@@ -150,6 +157,40 @@ class ResponseTests(unittest.TestCase):
 
 
 class ClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_timeout_drops_and_relaunches(self):
+        from tokenwatch.browser.client import _BrowserFailure
+        for phase in ("fetch", "settle"):
+            with self.subTest(phase=phase):
+                first, second = FakeSession(), FakeSession()
+                if phase == "fetch":
+                    first.resume.clear()
+                else:
+                    async def hang(_):
+                        await asyncio.Future()
+                    first.settle = hang
+                client, launcher, forwarder = self.client(first, second)
+                object.__setattr__(client._config, "request_timeout", 0.02)
+                with self.assertRaisesRegex(_BrowserFailure, "Browser operation failed") as caught:
+                    await asyncio.wait_for(client.get_json("one", "/user"), 1)
+                self.assertIn("TimeoutError", caught.exception.detail)
+                self.assertTrue(first.closed.is_set())
+                self.assertFalse(forwarder.started[0].alive)
+                self.assertEqual(await client.get_json("one", "/user"), [])
+                self.assertEqual(len(launcher.launches), 2)
+                await client.aclose()
+
+    async def test_request_cancellation_propagates(self):
+        session = FakeSession()
+        session.resume.clear()
+        client, _, _ = self.client(session)
+        task = asyncio.create_task(client.get_json("one", "/user"))
+        await session.started.wait()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertTrue(session.closed.is_set())
+        await client.aclose()
+
     async def test_forwarder_blocked_causes(self):
         forward = FakeForward()
         forward.exited.set()
