@@ -40,6 +40,8 @@ class RequestGate:
         self.locks = defaultdict(asyncio.Lock)
         self.status_cache = {}
         self.status_locks = defaultdict(asyncio.Lock)
+        self.closing = False
+        self.in_flight = set()
 
     def remember_status(self, account_id, status):
         self.status_cache[account_id] = (self.clock(), status)
@@ -76,8 +78,20 @@ class RequestGate:
             return "unknown"
 
     async def get(self, account_id, path, params, decode=lambda value: value, probe=False):
+        if self.closing:
+            raise asyncio.CancelledError()
+        task = asyncio.current_task()
+        self.in_flight.add(task)
+        try:
+            return await self._dispatch(account_id, path, params, decode, probe)
+        finally:
+            self.in_flight.discard(task)
+
+    async def _dispatch(self, account_id, path, params, decode, probe):
         if account_id is None:
             while True:
+                if self.closing:
+                    raise asyncio.CancelledError()
                 wait = self.distribution_wait()
                 if wait:
                     raise wait
@@ -107,6 +121,8 @@ class RequestGate:
     async def _get(self, account_id, path, params, decode, probe):
         async with self.locks[account_id]:
             while True:
+                if self.closing:
+                    raise asyncio.CancelledError()
                 with self.store.begin() as db:
                     account = db.get(Account, account_id)
                     if not account or account.status != "active":
@@ -124,6 +140,8 @@ class RequestGate:
                 payload = await self.upstream.get_json(account_id, path, params)
                 result = decode(payload)
             except UpstreamError as exc:
+                if self.closing or getattr(self.upstream, "_closed", False):
+                    raise asyncio.CancelledError() from exc
                 exc.endpoint = safe_endpoint(path)
                 if isinstance(exc, AuthRequired):
                     self.remember_status(account_id, "logged_out")
@@ -165,8 +183,11 @@ class Scheduler:
         self.clock = clock
         self.gate = gate
         self.running = {}
+        self.closing = False
 
     async def run_job(self, job: Job):
+        if self.closing:
+            raise asyncio.CancelledError()
         next_run = self.clock() + job.interval_seconds
         wait_reason = None
         last_error = None
@@ -215,6 +236,8 @@ class Scheduler:
         return f"{category} on {endpoint}"[:200]
 
     def tick(self):
+        if self.closing:
+            return
         self.running = {key: task for key, task in self.running.items() if not task.done()}
         with self.store() as db:
             jobs = db.scalars(select(Job).outerjoin(Account).where(
@@ -241,6 +264,19 @@ class Scheduler:
                 self.tick()
                 await asyncio.sleep(1)
         finally:
-            for task in self.running.values():
+            if not self.closing:
+                for task in self.running.values():
+                    task.cancel()
+                await asyncio.gather(*self.running.values(), return_exceptions=True)
+
+    async def drain(self, gate, timeout):
+        self.closing = True
+        if gate:
+            gate.closing = True
+        tasks = set(self.running.values()) | (set(gate.in_flight) if gate else set())
+        tasks.discard(asyncio.current_task())
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=timeout)
+            for task in pending:
                 task.cancel()
-            await asyncio.gather(*self.running.values(), return_exceptions=True)
+            await asyncio.gather(*tasks, return_exceptions=True)

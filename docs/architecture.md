@@ -45,6 +45,10 @@ Before each interactive login, the server best-effort clears Caps Lock on its di
 
 ## Invariants
 
+### Shutdown
+
+Shutdown closes the request gate and scheduler to new work, stops the scheduler loop, and drains running jobs and gated requests for up to `shutdown_grace_seconds` (default 30). Remaining tasks are cancelled and awaited; login sessions then close, followed by the browser pool and its local proxy forwarders, and finally the database. Failures observed while the gate or browser pool is closing do not penalize accounts or become job errors; reserved request spacing is retained. The systemd unit uses `KillMode=mixed` to keep proxy subprocesses alive during draining and `TimeoutStopSec=90`; configure the timeout above the grace period with room for cleanup.
+
 ### Accounts
 
 Authenticated REST endpoints list, inspect, create, edit, pause/resume, and delete accounts. New managed accounts use the normalized login email as ID and the Windows persona; existing IDs remain valid. The private `accounts_file` (default `accounts.local.toml` beside the browser configuration) stores email, password, and proxy URL in plaintext, and authenticated responses return them for managed accounts. Static `[[accounts]]` cannot be edited except for status or deleted through the API. On creation and proxy changes, the server detects the timezone through that account’s proxy using `https://ipwho.is/`; detection failure leaves the account unchanged. Editing preserves the fingerprint seed and persona; `replace_account` atomically writes the managed file, drops the running instance under its account lock, and updates the pool. Account deletion requires that no job references it and preserves its profile directory. Interactive login leases do not consume the non-interactive instance limit and are not idle-evicted while active.

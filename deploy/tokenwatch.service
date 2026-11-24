@@ -12,6 +12,8 @@ Environment=DISPLAY=:77
 ExecStart=/opt/tokenwatch/venv/bin/uvicorn tokenwatch.api:create_app --factory --workers 1 --host 127.0.0.1 --port 8000
 Restart=on-failure
 RestartSec=10
+KillMode=mixed
+TimeoutStopSec=90
 UMask=0077
 NoNewPrivileges=true
 

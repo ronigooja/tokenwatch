@@ -174,6 +174,7 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
         app.state.collectors = None
         app.state.gate = None
         task = None
+        scheduler = None
         try:
             if client is not None:
                 gate = RequestGate(store, client, config)
@@ -182,18 +183,27 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
                 collectors = Collectors(store, gate, config, catalog=catalog)
                 app.state.collectors = collectors
                 if run_scheduler:
-                    task = asyncio.create_task(Scheduler(store, config, {
+                    scheduler = Scheduler(store, config, {
                         "daily": collectors.daily, "transfers": collectors.transfers, "coin_catalog": catalog.refresh,
-                    }, gate=gate).run())
+                    }, gate=gate)
+                    task = asyncio.create_task(scheduler.run())
             app.state.logins = LoginSessions(store, client, app.state.gate, config)
             yield
         finally:
-            if hasattr(app.state, "logins"):
-                await app.state.logins.shutdown()
+            if scheduler is None:
+                scheduler = Scheduler(store, config, {}, gate=app.state.gate)
+            scheduler.closing = True
+            if app.state.gate:
+                app.state.gate.closing = True
             if task:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+            await scheduler.drain(app.state.gate, config.shutdown_grace_seconds)
+            if hasattr(app.state, "logins"):
+                await app.state.logins.shutdown()
+            if client is not None and callable(getattr(client, "aclose", None)):
+                await client.aclose()
             store.kw["bind"].dispose()
 
     app = FastAPI(title="Tokenwatch", version="0.1.0", lifespan=lifespan)

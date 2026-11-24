@@ -25,6 +25,7 @@ class Settings(BaseModel):
     novnc_url: str = ""
     vnc_password: SecretStr | None = None
     login_timeout: float = Field(default=900, gt=0)
+    shutdown_grace_seconds: float = Field(default=30, ge=0)
 
     @model_validator(mode="after")
     def validate_ranges(self):
