@@ -177,8 +177,49 @@ def test_search_matches_realistic_responses():
     assert search_matches(payload, contract) == {"uniswap": {"ethereum", "base"}, "other": {"ethereum"}}
     assert search_matches({"bestMatches": [{}], "tokens": [payload["tokens"][1]]}, contract) == {
         "other": {"ethereum"}}
-    with pytest.raises(BadResponse):
-        search_matches({"bestMatches": []}, contract)
+    assert not search_matches({"bestMatches": []}, contract)
+
+
+@pytest.mark.parametrize("payload,expected", [
+    ({"twitter": []}, "no_match"),
+    ({"tokens": None}, "no_match"),
+    ({"tokens": []}, "no_match"),
+    ({"tokens": "x"}, "error"),
+    ([], "error"),
+    (search(token("game", "ethereum", address(101))), "pending_support"),
+])
+def test_classified_search_payload_through_scheduler(core, settings, payload, expected):
+    store, fake, clock, gate, _ = core
+    feeds = catalog_feeds()
+    feeds[ALPHA_URL] = envelope([{"symbol": "GAME", "chainId": "1", "contractAddress": address(101)}])
+    catalog = CoinCatalog(store, gate, mock_feeds(feeds, []), clock)
+    asyncio.run(catalog.refresh_snapshot())
+    coin_id = f"alpha:1:{address(101)}"
+    with store.begin() as db:
+        assert db.get(Coin, coin_id).status == "pending_match"
+        db.add(Job(kind="coin_catalog", account_id="a", enabled=True, interval_seconds=60))
+    fake.responses.append(payload)
+
+    async def handler(job):
+        await catalog.match_next(job)
+
+    scheduler = Scheduler(store, settings, {"coin_catalog": handler}, clock)
+    with store() as db:
+        job = db.scalar(select(Job).where(Job.kind == "coin_catalog"))
+    asyncio.run(scheduler.run_job(job))
+    with store() as db:
+        coin, account, job = db.get(Coin, coin_id), db.get(Account, "a"), db.get(Job, job.id)
+        if expected == "error":
+            assert coin.status == "pending_match"
+            assert (account.failures, job.last_error) == (1, "BadResponse on /intelligence/search")
+        else:
+            assert (coin.status, account.failures, job.last_error) == (expected, 0, None)
+            assert account.status == "active"
+            if expected == "no_match":
+                assert coin.reason == "no Arkham token matches the contract"
+            else:
+                assert (coin.pricing_id, coin.matched_chains) == ("game", ["ethereum"])
+    assert fake.calls == [("a", "/intelligence/search", {"query": address(101)})]
 
 
 def pending(db, id, chain, contract):

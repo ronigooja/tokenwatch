@@ -181,10 +181,15 @@ def classify(candidate, snapshot, futures_symbols, policies):
 
 
 def search_matches(payload, address):
-    if not isinstance(payload, dict) or not isinstance(payload.get("tokens"), list):
+    if not isinstance(payload, dict):
+        raise BadResponse("invalid token search payload")
+    tokens = payload.get("tokens")
+    if tokens is None:
+        tokens = []
+    if not isinstance(tokens, list):
         raise BadResponse("invalid token search payload")
     matches = defaultdict(set)
-    for token in payload["tokens"]:
+    for token in tokens:
         identifier = token.get("identifier") if isinstance(token, dict) else None
         if not isinstance(identifier, dict):
             continue
