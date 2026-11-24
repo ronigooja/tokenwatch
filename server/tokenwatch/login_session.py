@@ -89,7 +89,7 @@ class LoginSessions:
             if self.current is session:
                 await self._close(session, activate=session.state != "failed")
 
-    async def _close(self, session, *, activate):
+    async def _close(self, session, *, activate=False, restore=False):
         session.ticket = ""
         session.revoked.set()
         if session.timer is not asyncio.current_task():
@@ -97,13 +97,21 @@ class LoginSessions:
         session.task.cancel()
         with suppress(asyncio.CancelledError):
             await session.task
-        if activate:
+        if activate or restore:
             with self.store.begin() as db:
                 account = db.get(Account, session.account_id)
-                if account and account.pause_reason == "login":
-                    account.status, account.pause_reason = "active", None
-        self.history[session.account_id] = "closed" if activate else "failed"
+                if account and account.pause_reason == "login" and (not restore or account.status == "paused"):
+                    account.status, account.pause_reason = session.previous if restore else ("active", None)
+        self.history[session.account_id] = "closed" if activate or restore else "failed"
         self.current = None
+
+    async def cancel(self, account_id):
+        async with self.lock:
+            session = self.current
+            if not session or session.account_id != account_id:
+                raise HTTPException(404, "Login session not found")
+            await self._close(session, restore=True)
+            return self.view(account_id)
 
     async def finish(self, account_id):
         async with self.lock:

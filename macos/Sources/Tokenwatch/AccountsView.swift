@@ -102,10 +102,12 @@ struct AccountsView: View {
                 LoginSheet(client: client, account: request.account, page: request.page) { result in
                     switch result {
                     case .success(let status):
-                        sessions[request.account.id] = status
-                        checkedAt[request.account.id] = .now
-                        checkErrors[request.account.id] = nil
-                        loginNote = "Session check for \(request.account.label): \(status.rawValue)"
+                        if let status {
+                            sessions[request.account.id] = status
+                            checkedAt[request.account.id] = .now
+                            checkErrors[request.account.id] = nil
+                            loginNote = "Session check for \(request.account.label): \(status.rawValue)"
+                        }
                     case .failure(let error):
                         loginNote = "Session check for \(request.account.label) failed: \(error.localizedDescription)"
                     }

@@ -101,7 +101,7 @@ struct LoginSheet: View {
     let client: APIClient
     let account: Account
     let page: LoginPage
-    let onFinish: (Result<AccountSession.Status, Error>) -> Void
+    let onFinish: (Result<AccountSession.Status?, Error>) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var phase: AccountLogin.Phase?
     @State private var path: String?
@@ -136,6 +136,7 @@ struct LoginSheet: View {
             HStack {
                 Text("\(title): \(account.label)").font(.headline)
                 Spacer()
+                Button("Close") { action.run { try await cancel() } }.disabled(action.busy)
                 Button("Done") { action.run { try await finish() } }.disabled(action.busy)
             }
             Group {
@@ -188,6 +189,17 @@ struct LoginSheet: View {
         } catch {
             note = error.localizedDescription
         }
+    }
+
+    private func cancel() async throws {
+        guard started else {
+            dismiss()
+            return
+        }
+        _ = try await client.cancelAccountLogin(account.id)
+        finished = true
+        onFinish(.success(nil))
+        dismiss()
     }
 
     private func finish() async throws {

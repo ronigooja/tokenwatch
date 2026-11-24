@@ -89,6 +89,9 @@ private final class StubProtocol: URLProtocol {
         case ("POST", "/fixture/accounts/acc-1/login/finish") where authorized:
             status = 200
             body = #"{"status":"logged_in"}"#
+        case ("POST", "/fixture/accounts/acc-1/login/cancel") where authorized:
+            status = 200
+            body = #"{"state":"closed","path":null}"#
         case ("POST", "/fixture/accounts/user+a@example.com/login") where authorized && encodedPath == emailLoginPath:
             status = 201
             body = #"{"state":"starting","path":"/login-view/ticket-2/vnc.html?autoconnect=1"}"#
@@ -322,6 +325,9 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(state.state, .open)
         let finished = try await api.finishAccountLogin("acc-1")
         XCTAssertEqual(finished.status, .loggedIn)
+        let cancelled = try await api.cancelAccountLogin("acc-1")
+        XCTAssertEqual(cancelled.state, .closed)
+        XCTAssertNil(cancelled.path)
     }
 
     func testEmailAccountIDPaths() async throws {
