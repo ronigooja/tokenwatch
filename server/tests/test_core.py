@@ -15,7 +15,7 @@ from tokenwatch.config import Settings, load_settings
 from tokenwatch.db import (Account, Coin, DailyBalance, DailyCollection, Event, Exclusion,
                            Job, PushLog, Rule, Subscription, Transfer, TransferCursor, open_store)
 from tokenwatch.scheduler import AccountUnavailable, RequestGate, Scheduler
-from tokenwatch.upstream import AuthRequired, BadResponse, Blocked, RateLimited
+from tokenwatch.upstream import AuthRequired, BadResponse, Blocked, RateLimited, RequestRejected
 
 
 class FakeUpstream:
@@ -94,8 +94,116 @@ def test_blocked_gate_diagnostics(core, settings, caplog):
         with store() as db:
             assert db.get(Account, "a").failures == 0
             assert db.get(Account, "b").failures == 1
-        assert "account_retry account_id=b cause=challenge_response" in caplog.text
+            assert db.get(Account, "b").available_at == clock.value + settings.backoff_initial
+            assert db.get(Account, "a").available_at == clock.value + settings.request_interval
+        assert sum("account_retry account_id=b cause=challenge_response" in r.getMessage() for r in caplog.records) == 1
         assert [call[0] for call in fake.calls] == ["a", "b", "a"]
+    asyncio.run(run())
+
+
+def test_browser_pause_diagnostics_and_screenshots(core, settings, tmp_path, caplog):
+    from dataclasses import replace
+    from tokenwatch.browser import AccountConfig, BrowserConfig, BrowserUpstreamClient
+    from tokenwatch.browser.transport import Response
+
+    store, _, clock, gate, _ = core
+    directory = tmp_path / "blocked-screenshots"
+    class Forward:
+        port = 1234
+        alive = True
+        async def wait(self):
+            await asyncio.Future()
+        async def close(self):
+            self.alive = False
+    class Forwarder:
+        async def start(self, account):
+            return Forward()
+    class Session:
+        def __init__(self, response, mode="ok"):
+            self.response, self.mode, self.calls = response, mode, 0
+        async def open_site(self): pass
+        async def title(self): return "Arkham"
+        async def failure_context(self): return "page=https://arkm.com/login title=Just a moment..."
+        async def fetch(self, url, headers):
+            self.calls += 1
+            return self.response
+        async def screenshot(self, path):
+            Path(path).write_bytes(b"partial")
+            if self.mode == "failure": raise RuntimeError("private")
+            if self.mode == "timeout": await asyncio.Future()
+        async def close(self): pass
+    class Launcher:
+        def __init__(self, session): self.session = session
+        async def launch(self, *args): return self.session
+
+    config = BrowserConfig(Path("chrome"), tmp_path / "profiles", "key", (
+        AccountConfig("a", "socks5h://user:password@proxy.example:1080", 1),), page_settle_seconds=0)
+    async def run_case(session, browser_config, *, job=False):
+        with store.begin() as db:
+            account = db.get(Account, "a")
+            account.status, account.available_at, account.failures = "active", 0, 0
+        client = BrowserUpstreamClient(browser_config, launcher=Launcher(session), forwarder=Forwarder(), clock=clock)
+        gate.upstream = client
+        if job:
+            async def handler(job):
+                await gate.get("a", "/transfers", {"token": "secret-query"})
+            with store.begin() as db:
+                row = Job(account_id="a", kind="daily", interval_seconds=5, enabled=True)
+                db.add(row)
+                db.flush()
+                job_id = row.id
+            with store() as db:
+                row = db.get(Job, job_id)
+                await Scheduler(store, settings, {"daily": handler}, clock=clock).run_job(row)
+        else:
+            with pytest.raises((Blocked, RequestRejected)):
+                await gate.get("a", "/transfers", {"token": "secret-query"})
+        with store() as db:
+            event = db.scalar(select(Event).order_by(Event.id.desc()))
+            data = dict(event.data)
+            assert db.get(Account, "a").status == "paused"
+        await client.aclose()
+        assert session.calls == 1
+        return data
+
+    async def run():
+        response = Response(403, "Just a moment")
+        session = Session(response)
+        before = len(caplog.records)
+        data = await run_case(session, config, job=True)
+        assert data["cause"] == "challenge_403" and data["source"] == "job"
+        assert data["job_id"] and data["job_kind"] == "daily" and data["endpoint"] == "/transfers"
+        assert data["page"] == "https://arkm.com/login" and data["title"] == "Just a moment..."
+        assert "screenshot" not in data and not directory.exists()
+        warnings = [r.getMessage() for r in caplog.records[before:] if r.getMessage().startswith("account_paused ")]
+        assert len(warnings) == 1 and "account_id=a cause=challenge_403 source=job" in warnings[0]
+        assert all(secret not in warnings[0] for secret in ("secret-query", "proxy.example", "user:password", "@"))
+
+        configured = replace(config, blocked_screenshot_dir=directory, blocked_screenshot_keep=2)
+        directory.mkdir()
+        (directory / "keep.txt").write_text("unrelated")
+        for i in range(3):
+            clock.value += 1
+            data = await run_case(Session(response), configured)
+            name = data["screenshot"]
+            import re
+            assert re.fullmatch(r"\d+-[0-9a-f]{8}\.png", name) and "@" not in name
+            assert (directory / name).stat().st_mode & 0o777 == 0o600
+            assert directory.stat().st_mode & 0o777 == 0o700
+        assert len(list(directory.glob("*.png"))) == 2 and (directory / "keep.txt").exists()
+        assert not (directory / f"{int(clock.value)-2}-ca978112.png").exists()
+
+        for mode in ("failure", "timeout"):
+            clock.value += 1
+            data = await asyncio.wait_for(run_case(Session(response, mode), configured), 6)
+            assert data["cause"] == "challenge_403" and "screenshot" not in data
+            assert not (directory / f"{int(clock.value)}-ca978112.png").exists()
+        session = Session(response)
+        session.screenshot = None
+        data = await run_case(session, configured)
+        assert "screenshot" not in data
+        data = await run_case(Session(Response(403, "{}")), configured)
+        assert data["reason"] == "RequestRejected" and "cause" not in data and "screenshot" not in data
     asyncio.run(run())
 
 

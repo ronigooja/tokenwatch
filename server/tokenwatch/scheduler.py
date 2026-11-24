@@ -22,7 +22,9 @@ _job_context = ContextVar("job_context", default=None)
 def pause_details(exc, path, probe):
     job = _job_context.get()
     source = "status_probe" if probe else "job" if job else "other"
-    result = {"cause": getattr(exc, "cause", None), "source": source, "endpoint": safe_endpoint(path)}
+    result = {"source": source, "endpoint": safe_endpoint(path)}
+    if isinstance(exc, Blocked):
+        result["cause"] = exc.cause
     if source == "job":
         result.update(job_id=job[0], job_kind=job[1])
     for key in ("title", "page", "status", "screenshot"):

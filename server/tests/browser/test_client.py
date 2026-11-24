@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from tokenwatch.browser import AccountConfig, BrowserConfig, BrowserUpstreamClient
-from tokenwatch.browser.client import _decode, sign_payload
+from tokenwatch.browser.client import _decode, _through, sign_payload
 from tokenwatch.browser.config import proxy_parts
 from tokenwatch.browser.transport import Response
 from tokenwatch.upstream import AuthRequired, BadResponse, Blocked, RateLimited
@@ -109,8 +109,10 @@ class ResponseTests(unittest.TestCase):
             self.assertEqual((caught.exception.cause, caught.exception.status), (cause, response.status))
 
     def test_screenshot_config_requires_retention(self):
-        with self.assertRaisesRegex(ValueError, "blocked_screenshot_keep"):
-            replace(CONFIG, blocked_screenshot_dir=Path("private"))
+        for keep in (None, 0, True, 1.5):
+            with self.subTest(keep=keep), self.assertRaisesRegex(ValueError, "blocked_screenshot_keep"):
+                replace(CONFIG, blocked_screenshot_dir=Path("private"), blocked_screenshot_keep=keep)
+        replace(CONFIG, blocked_screenshot_keep=2)
 
     def test_documented_signature(self):
         self.assertEqual(sign_payload("/transfers", TIMESTAMP, "test-key"), SIGNATURE)
@@ -148,6 +150,67 @@ class ResponseTests(unittest.TestCase):
 
 
 class ClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_forwarder_blocked_causes(self):
+        forward = FakeForward()
+        forward.exited.set()
+        async def action():
+            await asyncio.Future()
+        with self.assertRaises(Blocked) as caught:
+            await _through(forward, action)
+        self.assertEqual(caught.exception.cause, "forwarder_stopped")
+        forward = FakeForward()
+        task = asyncio.create_task(_through(forward, action))
+        await asyncio.sleep(0)
+        forward.exited.set()
+        with self.assertRaises(Blocked) as caught:
+            await task
+        self.assertEqual(caught.exception.cause, "forwarder_stopped")
+
+        client, _, forwarder = self.client(FakeSession())
+        forwarder.error = RuntimeError("failure")
+        with self.assertRaises(Blocked) as caught:
+            await client.get_json("one", "/user")
+        self.assertEqual(caught.exception.cause, "forwarder_start_failed")
+        await client.aclose()
+
+    async def test_dead_lease_and_failed_proxy_causes(self):
+        session = FakeSession()
+        client, _, forwarder = self.client(session)
+        await client.get_json("one", "/user")
+        # Hold the condition so the watcher cannot remove the idle instance first.
+        async with client._changed:
+            forwarder.started[0].exited.set()
+            task = asyncio.create_task(client.get_json("one", "/user"))
+        with self.assertRaises(Blocked) as caught:
+            await task
+        self.assertEqual(caught.exception.cause, "forwarder_stopped")
+        with self.assertRaises(Blocked) as caught:
+            await client.get_json("one", "/user")
+        self.assertEqual(caught.exception.cause, "forwarder_stopped")
+        self.assertEqual(len(session.fetches), 1)
+        await client.aclose()
+
+    async def test_dead_forwarder_capture_failure_is_ignored(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as directory:
+            session = FakeSession()
+            session.resume.clear()
+            async def screenshot(path):
+                Path(path).write_bytes(b"partial")
+                raise RuntimeError("page closed")
+            session.screenshot = screenshot
+            client, _, forwarder = self.client(session, blocked_screenshot_dir=Path(directory), blocked_screenshot_keep=1)
+            task = asyncio.create_task(client.get_json("one", "/user"))
+            await asyncio.wait_for(session.started.wait(), 1)
+            forwarder.started[0].exited.set()
+            with self.assertRaises(Blocked) as caught:
+                await task
+            self.assertEqual(caught.exception.cause, "forwarder_stopped")
+            self.assertFalse(hasattr(caught.exception, "screenshot"))
+            self.assertEqual(list(Path(directory).iterdir()), [])
+            self.assertEqual(len(session.fetches), 1)
+            await client.aclose()
+
     async def test_blocked_screenshot_and_rotation(self):
         from tempfile import TemporaryDirectory
         with TemporaryDirectory() as directory:
@@ -319,8 +382,9 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         blocked.titles = deque(["Just a moment..."])
         client, _, _ = self.client(session, blocked, cf_wait_seconds=0.01)
         await client.get_json("one", "/transfers")
-        with self.assertRaises(Blocked):
+        with self.assertRaises(Blocked) as caught:
             await client.get_json("two", "/transfers")
+        self.assertEqual(caught.exception.cause, "challenge_timeout")
         self.assertEqual(blocked.fetches, [])
         self.assertTrue(blocked.closed.is_set())
 
