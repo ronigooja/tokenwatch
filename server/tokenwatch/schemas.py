@@ -71,6 +71,14 @@ class CatalogStatus(Schema):
     error: str | None
 
 
+class RematchInput(Schema):
+    statuses: list[Literal["no_match"]] = Field(default_factory=lambda: ["no_match"])
+
+
+class RematchResult(Schema):
+    count: int
+
+
 class FuturesMappingInput(Schema):
     symbol: CatalogSymbol
 

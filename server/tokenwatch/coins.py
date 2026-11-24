@@ -293,6 +293,7 @@ class CoinCatalog:
             elif coin.match_status and deployment_keys(coin.deployments).isdisjoint(deployment_keys(candidate.deployments)):
                 coin.match_status = coin.match_reason = coin.automatic_pricing_id = None
                 coin.automatic_chains = []
+                coin.searched_deployments = []
             coin.symbol, coin.sources, coin.deployments = candidate.symbol, [candidate.feed], candidate.deployments
             coin.catalog_status, coin.catalog_reason = classify(candidate, snapshot, futures, policies)
             sync_coin(db, coin)
@@ -350,8 +351,19 @@ class CoinCatalog:
                         current.last_match_attempt, current.match_failures = self.clock(), 0
                 return result
             if coin.status == "pending_match":
-                deployment = min((row for row in coin.deployments if row["chain"] and row["address"]),
-                                 key=lambda row: (row["chain"], normalize(row["address"])))
+                searched = {tuple(key) for key in coin.searched_deployments}
+                deployment = min((row for row in coin.deployments if row["chain"] and row["address"] and
+                                  (row["chain"], normalize(row["address"])) not in searched),
+                                 key=lambda row: (row["chain"], normalize(row["address"])), default=None)
+                if deployment is None:
+                    with self.store.begin() as db:
+                        current = db.get(Coin, coin.id)
+                        if current and current.status == "pending_match" and not (
+                            deployment_keys(current.deployments) - {tuple(key) for key in current.searched_deployments}
+                        ):
+                            current.match_status, current.match_reason = "no_match", "no Arkham token matches the contract"
+                            sync_coin(db, current)
+                    return True
                 address = deployment["address"]
                 matches = await request(SEARCH_PATH, {"query": address},
                                               lambda payload: search_matches(payload, address))
@@ -370,7 +382,11 @@ class CoinCatalog:
                         elif matches:
                             current.match_status, current.match_reason = "ambiguous", "multiple Arkham pricing IDs match the contract"
                         else:
-                            current.match_status, current.match_reason = "no_match", "no Arkham token matches the contract"
+                            key = (deployment["chain"], normalize(address))
+                            searched = {tuple(item) for item in current.searched_deployments} | {key}
+                            current.searched_deployments = [list(item) for item in sorted(searched)]
+                            if not deployment_keys(current.deployments) - searched:
+                                current.match_status, current.match_reason = "no_match", "no Arkham token matches the contract"
                         sync_coin(db, current)
             else:
                 status = await request(TOKEN_ADDRESSES_PREFIX + coin.pricing_id, None, support_status)

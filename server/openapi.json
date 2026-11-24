@@ -877,6 +877,56 @@
         ]
       }
     },
+    "/coin-catalog/rematch": {
+      "post": {
+        "summary": "Rematch Catalog",
+        "operationId": "rematch_catalog_coin_catalog_rematch_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RematchInput"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RematchResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/coin-catalog/settings": {
       "get": {
         "summary": "Get Catalog Settings",
@@ -3743,6 +3793,35 @@
           "read"
         ],
         "title": "ReadInput"
+      },
+      "RematchInput": {
+        "properties": {
+          "statuses": {
+            "items": {
+              "type": "string",
+              "const": "no_match"
+            },
+            "type": "array",
+            "title": "Statuses"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "RematchInput"
+      },
+      "RematchResult": {
+        "properties": {
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "count"
+        ],
+        "title": "RematchResult"
       },
       "RuleConditions": {
         "properties": {

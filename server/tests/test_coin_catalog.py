@@ -315,7 +315,7 @@ def test_catalog_pass_rechecks_job_and_resumes(core, settings, change):
 
 def test_failure_rotation_limit_and_manual_retry(core, settings):
     store, fake, clock, gate, _ = core
-    catalog = CoinCatalog(store, gate, clock=clock)
+    catalog = CoinCatalog(store, gate, transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})), clock=clock)
     with store.begin() as db:
         pending(db, "a1", "1", "bad")
         pending(db, "a2", "1", "good")
@@ -348,7 +348,7 @@ def test_failure_rotation_limit_and_manual_retry(core, settings):
 def test_any_account_failure_retries_at_gate_and_restart(core, settings):
     store, fake, clock, gate, _ = core
     configure_matching(settings)
-    catalog = CoinCatalog(store, gate, clock=clock)
+    catalog = CoinCatalog(store, gate, transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})), clock=clock)
     with store.begin() as db:
         pending(db, "a1", "1", "bad")
         db.get(Account, "b").available_at = 1050
@@ -376,7 +376,7 @@ def test_any_account_failure_retries_at_gate_and_restart(core, settings):
 def test_lazy_search_support_outcomes_are_persisted(core, settings):
     store, fake, _, gate, _ = core
     configure_matching(settings)
-    catalog = CoinCatalog(store, gate)
+    catalog = CoinCatalog(store, gate, transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})))
     evm = "0x" + "ab" * 20
     with store.begin() as db:
         for id, contract in [("m1", evm), ("m2", "CaseSensitive"), ("m3", "same"), ("m4", "other")]:
@@ -534,7 +534,7 @@ def test_distributed_unknown_auth_failure_pauses_and_fails_over(core):
 def test_daily_matches_lazily_and_collects_every_supported_coin(core, settings):
     store, fake, _, gate, collectors = core
     configure_matching(settings)
-    collectors.catalog = CoinCatalog(store, gate)
+    collectors.catalog = CoinCatalog(store, gate, transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})))
     with store.begin() as db:
         pending(db, "alpha:1:Addr", "1", "Addr")
         db.add(Coin(id="unsupported", symbol="NO", status="unsupported", pricing_id="no"))
@@ -650,3 +650,105 @@ def test_schema_reset_preserves_history_and_jobs(settings):
         assert db.execute(text("PRAGMA foreign_key_check")).all() == []
         assert db.scalar(text("PRAGMA foreign_keys")) == 1
     migrated.kw["bind"].dispose()
+
+
+@pytest.mark.parametrize("last,expected", [(search(token("found", "C", "c")), "pending_support"),
+                                          (search(), "no_match")])
+def test_searches_all_deployments(core, settings, last, expected):
+    store, fake, clock, gate, _ = core
+    configure_matching(settings)
+    catalog = CoinCatalog(store, gate, httpx.MockTransport(lambda request: httpx.Response(200, json={})), clock)
+    with store.begin() as db:
+        pending(db, "multi", "A", "a")
+        db.flush()
+        coin = db.get(Coin, "multi")
+        coin.deployments = [dict(coin.deployments[0], chain=chain, address=address)
+                            for chain, address in [("C", "c"), ("A", "a"), ("B", "b")]]
+    fake.responses.extend([search(), search({"identifier": {"chain": "B", "address": "b"}}), last])
+    for status in ("pending_match", "pending_match", expected):
+        asyncio.run(catalog.match_next(SimpleNamespace(account_id="a")))
+        with store() as db:
+            assert db.get(Coin, "multi").status == status
+    assert [call[2]["query"] for call in fake.calls] == ["a", "b", "c"]
+
+
+def test_failed_deployment_is_retried(core, settings):
+    store, fake, clock, gate, _ = core
+    configure_matching(settings)
+    catalog = CoinCatalog(store, gate, httpx.MockTransport(lambda request: httpx.Response(200, json={})), clock)
+    with store.begin() as db:
+        pending(db, "multi", "A", "a")
+        db.flush()
+        coin = db.get(Coin, "multi")
+        coin.deployments = coin.deployments + [dict(coin.deployments[0], chain="B", address="b")]
+    fake.responses.extend([search(), BadResponse(), search()])
+    job = SimpleNamespace(account_id="a")
+    asyncio.run(catalog.match_next(job))
+    with pytest.raises(BadResponse):
+        asyncio.run(catalog.match_next(job))
+    with store() as db:
+        coin = db.get(Coin, "multi")
+        assert (coin.status, coin.match_failures, coin.searched_deployments) == ("pending_match", 1, [["A", "a"]])
+    asyncio.run(catalog.match_next(job))
+    assert [call[2]["query"] for call in fake.calls] == ["a", "b", "b"]
+
+
+def test_rematch_only_multi_no_match(core, settings):
+    store, _, _, _, _ = core
+    with store.begin() as db:
+        for name in ("multi", "single", "ambiguous", "mapped"):
+            pending(db, name, "A", "a")
+        db.flush()
+        for name in ("multi", "ambiguous", "mapped"):
+            coin = db.get(Coin, name)
+            coin.deployments = coin.deployments + [dict(coin.deployments[0], chain="B", address="b")]
+        for name in ("multi", "single", "mapped"):
+            coin = db.get(Coin, name)
+            coin.status = coin.match_status = "no_match"
+        coin = db.get(Coin, "ambiguous")
+        coin.status = coin.match_status = "ambiguous"
+        db.add(CoinMapping(coin_id="mapped", pricing_id="manual"))
+    with TestClient(create_app(settings, run_scheduler=False), headers={"Authorization": "Bearer test-token"}) as client:
+        assert client.post("/coin-catalog/rematch").json() == {"count": 1}
+        assert client.post("/coin-catalog/rematch", json={"statuses": ["no_match"]}).json() == {"count": 0}
+    with store() as db:
+        coin = db.get(Coin, "multi")
+        assert (coin.status, coin.searched_deployments) == ("pending_match", [["A", "a"]])
+        assert db.get(Coin, "single").status == "no_match"
+        assert db.get(Coin, "ambiguous").status == "ambiguous"
+        assert db.get(Coin, "mapped").status == "no_match"
+
+
+def test_deployment_change_during_search(core, settings):
+    store, _, clock, _, _ = core
+    configure_matching(settings)
+    with store.begin() as db:
+        pending(db, "multi", "A", "a")
+    class Gate:
+        async def get(self, account_id, path, params, decode):
+            with store.begin() as db:
+                coin = db.get(Coin, "multi")
+                coin.deployments = [dict(coin.deployments[0], chain="B", address="b")]
+            return decode(search())
+    catalog = CoinCatalog(store, Gate(), httpx.MockTransport(lambda request: httpx.Response(200, json={})), clock)
+    asyncio.run(catalog.match_next(SimpleNamespace(account_id="a")))
+    with store() as db:
+        coin = db.get(Coin, "multi")
+        assert (coin.status, coin.searched_deployments) == ("pending_match", [])
+
+
+def test_migrate_v4_preserves_coin(tmp_path):
+    path = tmp_path / "v4.db"
+    store = open_store(path)
+    with store.begin() as db:
+        pending(db, "old", "A", "a")
+    store.kw["bind"].dispose()
+    import sqlite3
+    with sqlite3.connect(path) as connection:
+        connection.execute("ALTER TABLE coins DROP COLUMN searched_deployments")
+        connection.execute("PRAGMA user_version=4")
+    store = open_store(path)
+    with store() as db:
+        assert db.get(Coin, "old").searched_deployments == []
+        assert db.scalar(text("PRAGMA user_version")) == 5
+    store.kw["bind"].dispose()

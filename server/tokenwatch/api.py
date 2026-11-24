@@ -17,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import schemas as s
-from .coins import CoinCatalog, sync_coin
+from .coins import CoinCatalog, deployment_keys, sync_coin
 from .collectors import Collectors, snapshot_diff
 from .config import load_settings
 from .login_session import LoginSessions
@@ -264,6 +264,20 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
             observed[row.alpha_chain_id].append(row.arkham_chain)
         return [{"alpha_chain_id": chain, "arkham_chains": names, "conflict": len(names) > 1}
                 for chain, names in observed.items()]
+
+    @app.post("/coin-catalog/rematch", response_model=s.RematchResult, dependencies=auth)
+    def rematch_catalog(db: DB, body: s.RematchInput | None = None):
+        statuses = body.statuses if body else ["no_match"]
+        count = 0
+        for coin in db.scalars(select(Coin).where(Coin.status.in_(statuses), Coin.match_status == "no_match")):
+            keys = deployment_keys(coin.deployments)
+            if len(keys) <= 1 or db.get(CoinMapping, coin.id) or db.get(Exclusion, coin.id):
+                continue
+            coin.searched_deployments = [list(min(keys))]
+            coin.match_status = coin.match_reason = None
+            sync_coin(db, coin)
+            count += 1
+        return {"count": count}
 
     @app.get("/coin-catalog/settings", response_model=s.CatalogSettingsInput, dependencies=auth)
     def get_catalog_settings(db: DB):

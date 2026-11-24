@@ -22,6 +22,7 @@ class Coin(Base):
     reason: Mapped[str | None]
     sources: Mapped[list] = mapped_column(default=list)
     deployments: Mapped[list] = mapped_column(default=list)
+    searched_deployments: Mapped[list] = mapped_column(default=list)
     matched_chains: Mapped[list] = mapped_column(default=list)
     # Keep catalog eligibility and Arkham outcomes separate so reclassification never
     # causes another request for an already resolved coin.
@@ -280,7 +281,7 @@ def open_store(path: Path):
             Base.metadata.create_all(connection)
         elif version == 1:
             migrate_v1(connection)
-        elif version not in (2, 3, 4):
+        elif version not in (2, 3, 4, 5):
             raise RuntimeError(f"Unsupported database schema version: {version}")
         if version == 2:
             connection.exec_driver_sql("ALTER TABLE jobs ADD COLUMN last_error VARCHAR")
@@ -288,9 +289,11 @@ def open_store(path: Path):
             connection.exec_driver_sql("ALTER TABLE coins ADD COLUMN match_failures INTEGER NOT NULL DEFAULT 0")
             connection.exec_driver_sql("ALTER TABLE coins ADD COLUMN last_match_attempt FLOAT")
             CatalogSettings.__table__.create(connection, checkfirst=True)
+        if version in (2, 3, 4):
+            connection.exec_driver_sql("ALTER TABLE coins ADD COLUMN searched_deployments JSON NOT NULL DEFAULT '[]'")
         if version == 1 and connection.exec_driver_sql("PRAGMA foreign_key_check").first():
             raise RuntimeError("Foreign key violation after coin schema migration")
-        connection.execute(text("PRAGMA user_version=4"))
+        connection.execute(text("PRAGMA user_version=5"))
         connection.commit()
         connection.execute(text("PRAGMA foreign_keys=ON"))
     return sessionmaker(engine, expire_on_commit=False)
