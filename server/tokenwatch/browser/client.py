@@ -3,6 +3,8 @@ from collections.abc import Callable
 import hashlib
 import json
 import math
+import logging
+import os
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -21,6 +23,7 @@ from .transport import (
 )
 
 T = TypeVar("T")
+logger = logging.getLogger(__name__)
 
 
 class _BrowserFailure(BadResponse):
@@ -65,12 +68,12 @@ def _decode(response: Response, now: float, path: str = "") -> Any:
     if response.status == 429:
         raise RateLimited("Upstream rate limited", retry_after=_retry_after(response.retry_after, now))
     if (response.cf_mitigated or "").lower() == "challenge":
-        raise Blocked("Upstream Cloudflare challenge")
+        raise Blocked("Upstream Cloudflare challenge", cause="challenge_response", status=response.status)
     if response.status == 403:
         body = response.body.lower()
         markers = ("just a moment", "/cdn-cgi/challenge-platform/", "cloudflare ray id")
         if any(m in body for m in markers):
-            raise Blocked("Upstream Cloudflare challenge")
+            raise Blocked("Upstream Cloudflare challenge", cause="challenge_403", status=response.status)
     if response.status == 400 and re.fullmatch(re.escape(TOKEN_ADDRESSES_PREFIX) + r"[a-zA-Z0-9_.-]+", path):
         try:
             body = json.loads(response.body, parse_constant=_invalid_json_constant)
@@ -91,7 +94,7 @@ def _decode(response: Response, now: float, path: str = "") -> Any:
 
 async def _through(forward: Forward, action: Callable[[], Awaitable[T]], diagnostic=None) -> T:
     if not forward.alive:
-        raise Blocked("Local proxy stopped")
+        raise Blocked("Local proxy stopped", cause="forwarder_stopped")
 
     async def run() -> T:
         return await action()
@@ -101,7 +104,7 @@ async def _through(forward: Forward, action: Callable[[], Awaitable[T]], diagnos
     try:
         done, _ = await asyncio.wait((operation, exited), return_when=asyncio.FIRST_COMPLETED)
         if exited in done or not forward.alive:
-            raise Blocked("Local proxy stopped")
+            raise Blocked("Local proxy stopped", cause="forwarder_stopped")
         if not operation.cancelled() and (error := operation.exception()) is not None:
             try:
                 message = str(error).splitlines()[0] if str(error) else ""
@@ -157,6 +160,47 @@ class BrowserUpstreamClient:
 
     async def __aexit__(self, *exc) -> None:
         await self.aclose()
+
+    async def _blocked_capture(self, account_id, session, exc):
+        if session is None:
+            return
+        try:
+            context = getattr(session, "failure_context", None)
+            if context:
+                async with asyncio.timeout(1):
+                    detail = await context()
+                # failure_context only exposes approved static page paths and challenge titles.
+                match = re.fullmatch(r"page=(\S*) title=(.*)", detail)
+                if match:
+                    exc.page = match.group(1)[:160]
+                    exc.title = _sanitize_detail(match.group(2))[:60]
+        except Exception:
+            pass
+        directory = self._config.blocked_screenshot_dir
+        screenshot = getattr(session, "screenshot", None)
+        if directory is None or screenshot is None:
+            return
+        name = f"{int(self._clock())}-{hashlib.sha256(account_id.encode()).hexdigest()[:8]}.png"
+        path = directory / name
+        try:
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(directory, 0o700)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.close(fd)
+            try:
+                async with asyncio.timeout(5):
+                    await screenshot(str(path))
+                os.chmod(path, 0o600)
+            except BaseException:
+                path.unlink(missing_ok=True)
+                raise
+            exc.screenshot = name
+            files = sorted((p for p in directory.iterdir() if re.fullmatch(r"\d+-[0-9a-f]{8}\.png", p.name)),
+                           key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True)
+            for old in files[self._config.blocked_screenshot_keep:]:
+                old.unlink(missing_ok=True)
+        except Exception:
+            logger.debug("blocked screenshot capture failed")
 
     async def get_json(
         self, account_id: str, path: str, params: dict[str, str] | None = None,
@@ -243,7 +287,7 @@ class BrowserUpstreamClient:
         except Exception:
             forward = None
         if forward is None:
-            raise Blocked("Local proxy failed to start")
+            raise Blocked("Local proxy failed to start", cause="forwarder_start_failed")
 
         session = None
         ready = False
@@ -269,6 +313,9 @@ class BrowserUpstreamClient:
                     await _through(forward, lambda: settle(self._config.page_settle_seconds))
             ready = True
             return _Instance(session, forward)
+        except Blocked as exc:
+            await self._blocked_capture(account.id, session, exc)
+            raise
         finally:
             if not ready:
                 if not forward.alive:
@@ -293,7 +340,7 @@ class BrowserUpstreamClient:
                 return
             except TimeoutError:
                 pass
-        raise Blocked("Browser Cloudflare challenge did not clear")
+        raise Blocked("Browser Cloudflare challenge did not clear", cause="challenge_timeout")
 
     @staticmethod
     async def _shutdown(session: BrowserSession | None, forward: Forward) -> None:
@@ -344,12 +391,14 @@ class BrowserUpstreamClient:
                     if self._closed:
                         raise BadResponse("Browser pool is closed")
                     if account_id in self._failed_proxies:
-                        raise Blocked("Local proxy stopped")
+                        raise Blocked("Local proxy stopped", cause="forwarder_stopped")
                     instance = self._instances.get(account_id)
                     if instance is not None:
                         if not instance.forward.alive:
+                            exc = Blocked("Local proxy stopped", cause="forwarder_stopped")
+                            await self._blocked_capture(account_id, instance.session, exc)
                             await self._drop(account_id, instance)
-                            raise Blocked("Local proxy stopped")
+                            raise exc
                         if instance.idle:
                             instance.idle.cancel()
                         instance.idle = None
@@ -387,6 +436,9 @@ class BrowserUpstreamClient:
                 if self._closed:
                     raise BadResponse("Browser pool is closed")
                 yield instance
+            except Blocked as exc:
+                await self._blocked_capture(account_id, instance.session, exc)
+                raise
             except (_BrowserFailure, asyncio.CancelledError):
                 discard = True
                 raise

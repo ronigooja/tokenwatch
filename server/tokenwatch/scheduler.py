@@ -3,6 +3,7 @@ import logging
 import random
 import time
 from collections import defaultdict
+from contextvars import ContextVar
 from datetime import timedelta
 from uuid import uuid4
 
@@ -15,6 +16,26 @@ from .upstream import AuthRequired, BadResponse, Blocked, RateLimited, RequestRe
 
 
 logger = logging.getLogger(__name__)
+_job_context = ContextVar("job_context", default=None)
+
+
+def pause_details(exc, path, probe):
+    job = _job_context.get()
+    source = "status_probe" if probe else "job" if job else "other"
+    result = {"cause": getattr(exc, "cause", None), "source": source, "endpoint": safe_endpoint(path)}
+    if source == "job":
+        result.update(job_id=job[0], job_kind=job[1])
+    for key in ("title", "page", "status", "screenshot"):
+        value = getattr(exc, key, None)
+        if value is not None:
+            result[key] = value
+    return result
+
+
+def log_pause(account_id, details, label="account_paused"):
+    logger.warning("%s account_id=%s cause=%s source=%s endpoint=%s title=%s path=%s job_id=%s job_kind=%s",
+                   label, account_id, details.get("cause"), details["source"], details["endpoint"],
+                   details.get("title", ""), details.get("page", ""), details.get("job_id"), details.get("job_kind"))
 
 
 class AccountUnavailable(Exception):
@@ -114,7 +135,10 @@ class RequestGate:
                     raise DistributionWait("waiting_for_account_request_gate", account.available_at)
                 try:
                     return await self._get(account.id, path, params, decode, probe)
-                except (AccountUnavailable, *PAUSING_ERRORS):
+                except PAUSING_ERRORS as exc:
+                    log_pause(account.id, pause_details(exc, path, probe), "account_retry")
+                    continue
+                except AccountUnavailable:
                     continue
         return await self._get(account_id, path, params, decode, probe)
 
@@ -158,8 +182,10 @@ class RequestGate:
                         if isinstance(exc, PAUSING_ERRORS):
                             account.status = "paused"
                             account.pause_reason = type(exc).__name__
+                            details = pause_details(exc, path, probe)
+                            log_pause(account_id, details)
                             alert(db, f"upstream:{uuid4()}", "account_paused",
-                                  {"account_id": account_id, "reason": account.pause_reason})
+                                  {"account_id": account_id, "reason": account.pause_reason, **details})
                 raise
             if payload is not UNSUPPORTED_TOKEN:
                 with self.store.begin() as db:
@@ -186,6 +212,13 @@ class Scheduler:
         self.closing = False
 
     async def run_job(self, job: Job):
+        token = _job_context.set((job.id, job.kind))
+        try:
+            return await self._run_job(job)
+        finally:
+            _job_context.reset(token)
+
+    async def _run_job(self, job: Job):
         if self.closing:
             raise asyncio.CancelledError()
         next_run = self.clock() + job.interval_seconds

@@ -71,8 +71,12 @@ class BrowserConfig:
     page_settle_seconds: float = 15
     accounts_file: Path | None = None
     managed_ids: frozenset[str] = frozenset()
+    blocked_screenshot_dir: Path | None = None
+    blocked_screenshot_keep: int | None = None
 
     def __post_init__(self) -> None:
+        if self.blocked_screenshot_dir is not None and (type(self.blocked_screenshot_keep) is not int or self.blocked_screenshot_keep < 1):
+            raise ValueError("blocked_screenshot_keep must be a positive integer when blocked_screenshot_dir is set")
         if not isinstance(self.signing_key, str) or not self.signing_key:
             raise ValueError("Missing signing key")
         if type(self.max_instances) is not int or self.max_instances < 1:
@@ -95,6 +99,8 @@ class BrowserConfig:
                 data["signing_key"] = signing_key
             for name in ("binary_path", "profiles_root"):
                 data[name] = path.parent / Path(data[name]).expanduser()
+            if "blocked_screenshot_dir" in data:
+                data["blocked_screenshot_dir"] = path.parent / Path(data["blocked_screenshot_dir"]).expanduser()
             accounts_file = path.parent / Path(data.pop("accounts_file", "accounts.local.toml")).expanduser()
             managed = []
             if accounts_file.exists():
@@ -104,7 +110,10 @@ class BrowserConfig:
             data["accounts_file"] = accounts_file
             data["managed_ids"] = frozenset(account["id"] for account in managed)
             return cls(**data)
-        except (OSError, KeyError, TypeError, ValueError, OverflowError):
+        except ValueError as error:
+            if "blocked_screenshot_keep" in str(error):
+                raise
+        except (OSError, KeyError, TypeError, OverflowError):
             pass
         raise ValueError("Cannot read browser configuration")
 

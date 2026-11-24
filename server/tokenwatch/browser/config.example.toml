@@ -8,6 +8,9 @@ idle_timeout = 60
 cf_wait_seconds = 30
 # Seconds per load-state wait; 0 disables settling and the recovery wait.
 page_settle_seconds = 15
+# Optional private screenshots; set both in browser.local.toml, outside the repository.
+# blocked_screenshot_dir = "/var/lib/tokenwatch/blocked-screenshots"
+# blocked_screenshot_keep = 10
 
 [[accounts]]
 id = "account-example"

@@ -77,6 +77,28 @@ def balance(id, amount=1):
             "balanceUsd": amount * 100, "prevBalanceUnit": 1, "prevBalanceUsd": 100}
 
 
+def test_blocked_gate_diagnostics(core, settings, caplog):
+    store, fake, clock, gate, _ = core
+    async def run():
+        fake.responses.append(Blocked("blocked", cause="challenge_403", status=403))
+        assert await gate.account_status("a") == "unknown"
+        with store() as db:
+            data = db.scalar(select(Event).order_by(Event.id.desc())).data
+            assert (data["source"], data["endpoint"], data["cause"], data["status"]) == (
+                "status_probe", "/user", "challenge_403", 403)
+        with store.begin() as db:
+            db.get(Account, "a").status = "active"
+            db.get(Account, "a").available_at = 0
+        fake.responses.extend([Blocked("blocked", cause="challenge_response"), {"ok": True}])
+        assert await gate.get(None, "/transfers", {}) == {"ok": True}
+        with store() as db:
+            assert db.get(Account, "a").failures == 0
+            assert db.get(Account, "b").failures == 1
+        assert "account_retry account_id=b cause=challenge_response" in caplog.text
+        assert [call[0] for call in fake.calls] == ["a", "b", "a"]
+    asyncio.run(run())
+
+
 def test_config_environment_and_migration(settings, tmp_path, monkeypatch):
     path = tmp_path / "config.local.toml"
     path.write_text(f'database = "{settings.database}"\nbearer_token = "file"\nsigning_key = "file"\n')

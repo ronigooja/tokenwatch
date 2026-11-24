@@ -101,6 +101,9 @@ class _PlaywrightSession:
     async def title(self) -> str:
         return await self._page.title()
 
+    async def screenshot(self, path: str) -> None:
+        await self._page.screenshot(path=path, full_page=False, timeout=5000)
+
     async def failure_context(self) -> str:
         try:
             parts = urlsplit(self._page.url)

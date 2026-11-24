@@ -101,6 +101,17 @@ class FakeLauncher:
 
 
 class ResponseTests(unittest.TestCase):
+    def test_blocked_response_causes(self):
+        for response, cause in ((Response(503, "", cf_mitigated="challenge"), "challenge_response"),
+                                (Response(403, "Just a moment"), "challenge_403")):
+            with self.assertRaises(Blocked) as caught:
+                _decode(response, TIMESTAMP)
+            self.assertEqual((caught.exception.cause, caught.exception.status), (cause, response.status))
+
+    def test_screenshot_config_requires_retention(self):
+        with self.assertRaisesRegex(ValueError, "blocked_screenshot_keep"):
+            replace(CONFIG, blocked_screenshot_dir=Path("private"))
+
     def test_documented_signature(self):
         self.assertEqual(sign_payload("/transfers", TIMESTAMP, "test-key"), SIGNATURE)
 
@@ -137,6 +148,24 @@ class ResponseTests(unittest.TestCase):
 
 
 class ClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_blocked_screenshot_and_rotation(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as directory:
+            session = FakeSession()
+            session.response = Response(403, "Just a moment")
+            async def screenshot(path):
+                Path(path).write_bytes(b"fake png")
+            session.screenshot = screenshot
+            client, _, _ = self.client(session, blocked_screenshot_dir=Path(directory), blocked_screenshot_keep=1)
+            with self.assertRaises(Blocked) as caught:
+                await client.get_json("one", "/user")
+            name = caught.exception.screenshot
+            self.assertRegex(name, r"^\d+-[0-9a-f]{8}\.png$")
+            self.assertEqual((Path(directory) / name).stat().st_mode & 0o777, 0o600)
+            self.assertEqual(Path(directory).stat().st_mode & 0o777, 0o700)
+            self.assertEqual(len(list(Path(directory).iterdir())), 1)
+            await client.aclose()
+
     async def test_optional_settle_once_and_disabled(self):
         from unittest.mock import AsyncMock
         for seconds, count in ((15, 1), (0, 0)):

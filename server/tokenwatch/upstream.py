@@ -16,6 +16,11 @@ class AuthRequired(UpstreamError):
 class Blocked(UpstreamError):
     """Cloudflare challenge or HTTP 403 that is not an auth denial."""
 
+    def __init__(self, message: str = "", *, cause: str | None = None, status: int | None = None):
+        super().__init__(message)
+        self.cause = cause
+        self.status = status
+
 
 class RateLimited(UpstreamError):
     """HTTP 429 or an equivalent throttling response."""
