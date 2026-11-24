@@ -366,7 +366,7 @@ private struct SettingsView: View {
         Form {
             TextField("Server URL", text: $address).focused($addressFocused)
             TextField("Bearer token", text: $token)
-            Text("Use HTTPS for remote servers. Leave the token blank to reuse the saved token for the same URL.")
+            Text("Use HTTPS for remote servers. The saved token is shown masked and is reused for the same URL; paste a new token to replace it.")
                 .foregroundStyle(.secondary)
             LabeledContent("Connection", value: model.status)
             if let problem = model.problem { Text(problem).foregroundStyle(.red) }
