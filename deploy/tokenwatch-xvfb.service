@@ -1,0 +1,10 @@
+[Unit]
+Description=Tokenwatch virtual display
+
+[Service]
+User=tokenwatch
+ExecStart=/usr/bin/Xvfb :77 -screen 0 1920x1080x24 -nolisten tcp
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

@@ -6,7 +6,8 @@ Browser readiness and safe pre-fetch probing are described in [architecture.md](
 ## Access
 
 - Requests need the headers `X-Timestamp` (unix seconds) and `X-Payload`.
-- `X-Payload` = `sha256(KEY + ":" + sha256(PATH + ":" + TIMESTAMP + ":" + KEY))`, where `PATH` is the URL path without query and `KEY` is the client key embedded in Arkham's frontend. Keep `KEY` in config, not in code.
+- The client key is the literal assigned to `NEXT_PUBLIC_WEBAPP_CLIENT_KEY` in a Next.js static chunk of the arkm.com frontend, served as a shared Cloudflare-cacheable static file (`cache-control: public, max-age=31536000`); it is not in the page HTML or `__NEXT_DATA__`. The same asset bytes and key fingerprint were observed for two logged-in accounts in two browsers. Keep the key in private config, not in the repository.
+- The request helper passes the key as the third argument to the signing function. `X-Payload` = `sha256(KEY + ":" + sha256(PATH + ":" + TIMESTAMP + ":" + KEY))`, where `PATH` is the URL pathname without query. Only the pathname, timestamp, and key are inputs; no cookie, token, user ID, or session is used, so the key does not depend on the account.
 - Requests without a login session fail with `transfers.explorer denied at anonymous`.
 - Requests from server IPs outside a page context are blocked by Cloudflare; the page must pass Cloudflare first.
 - A human completes the interactive Cloudflare Turnstile on login.
