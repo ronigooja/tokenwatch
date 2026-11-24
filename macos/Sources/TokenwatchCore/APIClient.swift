@@ -224,6 +224,10 @@ public struct APIClient: Sendable {
         try await decode(request(["accounts", id, "login", "finish"], method: "POST"))
     }
 
+    public func cancelAccountLogin(_ id: String) async throws -> AccountLogin {
+        try await decode(request(["accounts", id, "login", "cancel"], method: "POST"))
+    }
+
     public func events(_ filter: EventFilter = .init()) async throws -> [Event] {
         try await decode(request(["events"], query: filter.queryItems))
     }

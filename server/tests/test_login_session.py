@@ -119,6 +119,49 @@ def test_register_page(setup):
     assert fake.page == "register"
 
 
+@pytest.mark.parametrize("previous", [("active", None), ("paused", "Blocked")])
+def test_cancel_restores_previous_without_probe(setup, previous):
+    client, app, fake = setup
+    app.state.settings.login_timeout = 10
+    with app.state.store.begin() as db:
+        account = db.get(Account, "a")
+        account.status, account.pause_reason = previous
+        account.failures, account.available_at = 3, 123
+    app.state.gate.status_cache["a"] = (123, "logged_out")
+    assert client.post("/accounts/a/login/cancel").status_code == 404
+    path = client.post("/accounts/a/login").json()["path"]
+    wait_state(client, "open")
+    session = app.state.logins.current
+    assert client.post("/accounts/b/login/cancel").status_code == 404
+    assert client.post("/accounts/a/login/cancel").json() == {"state": "closed", "path": None}
+    assert session.revoked.is_set() and session.task.cancelled() and session.timer.cancelling()
+    assert client.get("/accounts/a/login").json() == {"state": "closed", "path": None}
+    assert client.get(urlsplit(path).path).status_code == 404
+    assert client.post("/accounts/a/login/cancel").status_code == 404
+    assert client.post("/accounts/a/login/finish").status_code == 404
+    assert not fake.calls
+    assert app.state.gate.status_cache["a"] == (123, "logged_out")
+    with app.state.store() as db:
+        account = db.get(Account, "a")
+        assert (account.status, account.pause_reason) == previous
+        assert (account.failures, account.available_at) == (3, 123)
+
+
+def test_cancel_preserves_changed_pause_reason(setup):
+    client, app, fake = setup
+    app.state.settings.login_timeout = 10
+    client.post("/accounts/a/login")
+    wait_state(client, "open")
+    with app.state.store.begin() as db:
+        account = db.get(Account, "a")
+        account.status, account.pause_reason = "paused", "Blocked"
+    assert client.post("/accounts/a/login/cancel").status_code == 200
+    with app.state.store() as db:
+        account = db.get(Account, "a")
+        assert (account.status, account.pause_reason) == ("paused", "Blocked")
+    assert not fake.calls
+
+
 def test_failed_timeout_closed_and_auth_pause(setup):
     client, app, fake = setup
     with app.state.store.begin() as db:

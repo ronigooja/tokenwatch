@@ -223,6 +223,10 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
     async def finish_login(account_id: s.Ref, request: Request):
         return await request.app.state.logins.finish(account_id)
 
+    @app.post("/accounts/{account_id}/login/cancel", response_model=s.LoginSession, dependencies=auth)
+    async def cancel_login(account_id: s.Ref, request: Request):
+        return await request.app.state.logins.cancel(account_id)
+
     @app.exception_handler(IntegrityError)
     async def conflict(_request, _error):
         return JSONResponse(status_code=409, content={"detail": "Resource conflicts with existing data"})
