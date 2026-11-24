@@ -53,7 +53,6 @@ struct AccountForm: View {
                 }
             }
         }.formStyle(.grouped).frame(width: 460).disabled(action.busy).interactiveDismissDisabled(action.busy)
-            .defaultFocus($focus, existing == nil ? .email : .proxy)
     }
 
     private func add(_ page: LoginPage) async throws {
