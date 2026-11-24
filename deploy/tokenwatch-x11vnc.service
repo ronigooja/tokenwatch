@@ -1,0 +1,13 @@
+[Unit]
+Description=Tokenwatch local VNC server
+After=tokenwatch-xvfb.service
+Requires=tokenwatch-xvfb.service
+
+[Service]
+User=tokenwatch
+Environment=HOME=/opt/tokenwatch
+ExecStart=/usr/bin/x11vnc -display :77 -rfbauth /opt/tokenwatch/.vnc/passwd -localhost -rfbport 5900 -forever -shared -noxdamage
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
