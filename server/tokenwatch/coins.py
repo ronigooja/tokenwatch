@@ -7,8 +7,8 @@ from dataclasses import dataclass
 import httpx
 from sqlalchemy import select
 
-from .db import CatalogCache, CatalogExclusion, ChainObservation, Coin, CoinMapping, Exclusion, FuturesMapping
-from .upstream import BadResponse, TOKEN_ADDRESSES_PREFIX, UNSUPPORTED_TOKEN
+from .db import CatalogCache, CatalogExclusion, CatalogSettings, ChainObservation, Coin, CoinMapping, Exclusion, FuturesMapping
+from .upstream import BadResponse, UpstreamError, TOKEN_ADDRESSES_PREFIX, UNSUPPORTED_TOKEN
 
 
 SPOT_URL = "https://api.binance.com/api/v3/exchangeInfo"
@@ -230,7 +230,7 @@ def sync_coin(db, coin):
     elif manual:
         coin.status = coin.manual_status if coin.manual_pricing_id == manual.pricing_id else "pending_support"
         coin.status = coin.status or "pending_support"
-        coin.reason = "Arkham does not support the manual pricing ID" if coin.status == "unsupported" else None
+        coin.reason = coin.match_reason if coin.status == "match_failed" else ("Arkham does not support the manual pricing ID" if coin.status == "unsupported" else None)
     elif coin.match_status:
         coin.status, coin.reason = coin.match_status, coin.match_reason
     elif not coin.id.startswith("native:") and any(row["chain"] and row["address"] for row in coin.deployments):
@@ -310,15 +310,41 @@ class CoinCatalog:
         async with self.match_lock:
             with self.store() as db:
                 coin = db.scalar(select(Coin).where(Coin.status.in_(("pending_match", "pending_support")))
-                                 .order_by(Coin.id).limit(1))
+                                 .order_by(Coin.last_match_attempt, Coin.id).limit(1))
                 if coin is None:
                     return False
+                setting = db.get(CatalogSettings, "matching")
+                if setting is None or setting.failure_limit < 1:
+                    raise MissingCatalogFailureLimit()
+                limit = setting.failure_limit
                 manual = db.get(CoinMapping, coin.id)
+            async def request(path, params, decode):
+                try:
+                    result = await self.gate.get(job.account_id, path, params, decode)
+                except UpstreamError as exc:
+                    with self.store.begin() as db:
+                        current = db.get(Coin, coin.id)
+                        if current and current.status == coin.status and current.pricing_id == coin.pricing_id:
+                            current.last_match_attempt = self.clock()
+                            current.match_failures += 1
+                            if current.match_failures >= limit:
+                                current.match_reason = f"{type(exc).__name__}: {current.match_failures} consecutive failures"
+                                if manual:
+                                    current.manual_pricing_id, current.manual_status = manual.pricing_id, "match_failed"
+                                else:
+                                    current.match_status = "match_failed"
+                                sync_coin(db, current)
+                    raise
+                with self.store.begin() as db:
+                    current = db.get(Coin, coin.id)
+                    if current and current.status == coin.status and current.pricing_id == coin.pricing_id:
+                        current.last_match_attempt, current.match_failures = self.clock(), 0
+                return result
             if coin.status == "pending_match":
                 deployment = min((row for row in coin.deployments if row["chain"] and row["address"]),
                                  key=lambda row: (row["chain"], normalize(row["address"])))
                 address = deployment["address"]
-                matches = await self.gate.get(job.account_id, SEARCH_PATH, {"query": address},
+                matches = await request(SEARCH_PATH, {"query": address},
                                               lambda payload: search_matches(payload, address))
                 with self.store.begin() as db:
                     current = db.get(Coin, coin.id)
@@ -338,7 +364,7 @@ class CoinCatalog:
                             current.match_status, current.match_reason = "no_match", "no Arkham token matches the contract"
                         sync_coin(db, current)
             else:
-                status = await self.gate.get(job.account_id, TOKEN_ADDRESSES_PREFIX + coin.pricing_id, None, support_status)
+                status = await request(TOKEN_ADDRESSES_PREFIX + coin.pricing_id, None, support_status)
                 with self.store.begin() as db:
                     current = db.get(Coin, coin.id)
                     if current and manual:
@@ -351,3 +377,7 @@ class CoinCatalog:
                     if current:
                         sync_coin(db, current)
             return True
+
+
+class MissingCatalogFailureLimit(Exception):
+    """Matching requires an explicitly configured failure limit."""

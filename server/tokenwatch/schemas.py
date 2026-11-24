@@ -28,7 +28,7 @@ class Schema(BaseModel):
 
 
 CoinStatus = Literal["supported", "no_match", "ambiguous", "unsupported", "needs_manual_mapping",
-                     "unknown_onchain", "excluded", "no_futures", "pending_match", "pending_support"]
+                     "unknown_onchain", "excluded", "no_futures", "pending_match", "pending_support", "match_failed"]
 Feed = Literal["spot", "alpha"]
 
 
@@ -56,6 +56,12 @@ class CoinOut(Schema):
     sources: list[Feed]
     deployments: list[Deployment]
     matched_chains: list[str]
+    match_failures: int
+    last_match_attempt: float | None
+
+
+class CatalogSettingsInput(Schema):
+    failure_limit: Annotated[int, Field(gt=0, strict=True)]
 
 
 class CatalogStatus(Schema):

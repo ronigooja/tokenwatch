@@ -44,6 +44,21 @@ class RequestGate:
     def remember_status(self, account_id, status):
         self.status_cache[account_id] = (self.clock(), status)
 
+    def distribution_wait(self):
+        with self.store() as db:
+            active = db.scalars(select(Account).where(Account.status == "active").order_by(
+                Account.available_at, Account.last_used_at, Account.id)).all()
+        available = [a for a in active if self.status_cache.get(a.id, (None, None))[1] != "logged_out"]
+        stamp = self.clock()
+        if not available:
+            return DistributionWait("no_eligible_account", stamp + 1)
+        idle = [a for a in available if not self.locks[a.id].locked()]
+        if not idle or (idle[0].available_at > stamp and any(self.locks[a.id].locked() for a in available)):
+            return DistributionWait("waiting_for_in_flight_account_request", min(stamp + 1, idle[0].available_at) if idle else stamp + 1)
+        if idle[0].available_at > stamp:
+            return DistributionWait("waiting_for_account_request_gate", idle[0].available_at)
+        return None
+
     async def account_status(self, account_id):
         async with self.status_locks[account_id]:
             cached = self.status_cache.get(account_id)
@@ -63,6 +78,9 @@ class RequestGate:
     async def get(self, account_id, path, params, decode=lambda value: value, probe=False):
         if account_id is None:
             while True:
+                wait = self.distribution_wait()
+                if wait:
+                    raise wait
                 with self.store() as db:
                     active = db.scalars(select(Account).where(Account.status == "active").order_by(
                         Account.available_at, Account.last_used_at, Account.id)).all()
@@ -140,11 +158,12 @@ def safe_endpoint(path):
 
 
 class Scheduler:
-    def __init__(self, store, settings, handlers, clock=time.time):
+    def __init__(self, store, settings, handlers, clock=time.time, gate=None):
         self.store = store
         self.settings = settings
         self.handlers = handlers
         self.clock = clock
+        self.gate = gate
         self.running = {}
 
     async def run_job(self, job: Job):
@@ -166,6 +185,11 @@ class Scheduler:
             with self.store() as db:
                 if job.account_id is not None and (account := db.get(Account, job.account_id)):
                     next_run = max(self.clock(), account.available_at)
+                elif job.account_id is None:
+                    gate = self.gate or RequestGate(self.store, None, self.settings, clock=self.clock)
+                    wait = gate.distribution_wait()
+                    next_run = wait.retry_at if wait else self.clock()
+                    wait_reason = wait.reason if wait else None
         except Exception as exc:
             last_error = self.log_failure(job, exc)
         with self.store.begin() as db:

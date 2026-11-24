@@ -27,6 +27,7 @@ Browser readiness and safe pre-fetch probing are described in [architecture.md](
 - `interval` values used by the page: `7d`, `14d`, `30d`.
 - Responses are JSON; transfers are under `transfers`, balance changes are a top-level array.
 - Login probes require a nonempty JSON object after successful HTTP decoding; they do not assume an account identifier field name. Status cache behavior is defined in [architecture.md](architecture.md).
+- Matching failure tracking, retry ordering, and configuration are defined in [architecture.md](architecture.md#coin-list); account gate and backoff behavior remains in effect for each request.
 
 ## Transfer fields used
 

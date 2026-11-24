@@ -741,7 +741,8 @@
                     "excluded",
                     "no_futures",
                     "pending_match",
-                    "pending_support"
+                    "pending_support",
+                    "match_failed"
                   ],
                   "type": "string"
                 },
@@ -864,6 +865,70 @@
                   },
                   "type": "array",
                   "title": "Response List Chain Observations Coin Catalog Chains Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/coin-catalog/settings": {
+      "get": {
+        "summary": "Get Catalog Settings",
+        "operationId": "get_catalog_settings_coin_catalog_settings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogSettingsInput"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      },
+      "put": {
+        "summary": "Put Catalog Settings",
+        "operationId": "put_catalog_settings_coin_catalog_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CatalogSettingsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogSettingsInput"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -1668,6 +1733,51 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/coins/{coin_id}/retry": {
+      "post": {
+        "summary": "Retry Coin",
+        "operationId": "retry_coin_coins__coin_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "coin_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$",
+              "title": "Coin Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoinOut"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -2876,6 +2986,21 @@
         ],
         "title": "CatalogExclusionOut"
       },
+      "CatalogSettingsInput": {
+        "properties": {
+          "failure_limit": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Failure Limit"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "failure_limit"
+        ],
+        "title": "CatalogSettingsInput"
+      },
       "CatalogStatus": {
         "properties": {
           "status": {
@@ -3009,7 +3134,8 @@
               "excluded",
               "no_futures",
               "pending_match",
-              "pending_support"
+              "pending_support",
+              "match_failed"
             ],
             "title": "Status"
           },
@@ -3048,6 +3174,21 @@
             },
             "type": "array",
             "title": "Matched Chains"
+          },
+          "match_failures": {
+            "type": "integer",
+            "title": "Match Failures"
+          },
+          "last_match_attempt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Match Attempt"
           }
         },
         "additionalProperties": false,
@@ -3060,7 +3201,9 @@
           "reason",
           "sources",
           "deployments",
-          "matched_chains"
+          "matched_chains",
+          "match_failures",
+          "last_match_attempt"
         ],
         "title": "CoinOut"
       },

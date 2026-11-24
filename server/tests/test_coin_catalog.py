@@ -162,6 +162,12 @@ def search(*tokens):
     return {"bestMatches": [], "tokens": list(tokens)}
 
 
+def configure_matching(settings):
+    with TestClient(create_app(settings, run_scheduler=False)) as client:
+        assert client.put("/coin-catalog/settings", json={"failure_limit": 3},
+                          headers={"Authorization": "Bearer test-token"}).status_code == 200
+
+
 def test_search_matches_realistic_responses():
     from tokenwatch.coins import search_matches
     contract = address(42)
@@ -190,6 +196,7 @@ def test_search_matches_realistic_responses():
 ])
 def test_classified_search_payload_through_scheduler(core, settings, payload, expected):
     store, fake, clock, gate, _ = core
+    configure_matching(settings)
     feeds = catalog_feeds()
     feeds[ALPHA_URL] = envelope([{"symbol": "GAME", "chainId": "1", "contractAddress": address(101)}])
     catalog = CoinCatalog(store, gate, mock_feeds(feeds, []), clock)
@@ -228,8 +235,69 @@ def pending(db, id, chain, contract):
                 status="pending_match"))
 
 
-def test_lazy_search_support_outcomes_are_persisted(core):
+def test_failure_rotation_limit_and_manual_retry(core, settings):
+    store, fake, clock, gate, _ = core
+    catalog = CoinCatalog(store, gate, clock=clock)
+    with store.begin() as db:
+        pending(db, "a1", "1", "bad")
+        pending(db, "a2", "1", "good")
+    job = SimpleNamespace(account_id="a")
+    with pytest.raises(Exception, match="MissingCatalogFailureLimit"):
+        # The job error is the exception class, not its message.
+        try:
+            asyncio.run(catalog.match_next(job))
+        except Exception as exc:
+            raise RuntimeError(type(exc).__name__) from exc
+    assert not fake.calls
+    configure_matching(settings)
+    fake.responses.extend([BadResponse("secret"), search(), BadResponse("secret"), BadResponse("secret")])
+    for _ in range(4):
+        try:
+            asyncio.run(catalog.match_next(job))
+        except BadResponse:
+            pass
+    with store() as db:
+        bad, good = db.get(Coin, "a1"), db.get(Coin, "a2")
+        assert (bad.status, bad.match_failures, bad.reason) == ("match_failed", 3, "BadResponse: 3 consecutive failures")
+        assert good.status == "no_match"
+    assert [call[2]["query"] for call in fake.calls] == ["bad", "good", "bad", "bad"]
+    with TestClient(create_app(settings, run_scheduler=False), headers={"Authorization": "Bearer test-token"}) as client:
+        result = client.post("/coins/a1/retry")
+        assert result.status_code == 200
+        assert (result.json()["status"], result.json()["match_failures"]) == ("pending_match", 0)
+
+
+def test_any_account_failure_retries_at_gate_and_restart(core, settings):
+    store, fake, clock, gate, _ = core
+    configure_matching(settings)
+    catalog = CoinCatalog(store, gate, clock=clock)
+    with store.begin() as db:
+        pending(db, "a1", "1", "bad")
+        db.get(Account, "b").available_at = 1050
+        job = Job(kind="coin_catalog", account_id=None, enabled=True, interval_seconds=604800)
+        db.add(job)
+        db.flush()
+        job_id = job.id
+    fake.responses.extend([BadResponse(), search()])
+    scheduler = Scheduler(store, settings, {"coin_catalog": catalog.match_next}, clock, gate=gate)
+    with store() as db:
+        job = db.get(Job, job_id)
+    asyncio.run(scheduler.run_job(job))
+    with store() as db:
+        job = db.get(Job, job_id)
+        assert job.next_run == 1020
+        assert job.wait_reason == "waiting_for_account_request_gate"
+    clock.value = 1020
+    scheduler = Scheduler(store, settings, {"coin_catalog": catalog.match_next}, clock, gate=gate)
+    asyncio.run(scheduler.run_job(job))
+    with store() as db:
+        assert db.get(Coin, "a1").status == "no_match"
+        assert db.get(Coin, "a1").match_failures == 0
+
+
+def test_lazy_search_support_outcomes_are_persisted(core, settings):
     store, fake, _, gate, _ = core
+    configure_matching(settings)
     catalog = CoinCatalog(store, gate)
     evm = "0x" + "ab" * 20
     with store.begin() as db:
@@ -238,12 +306,12 @@ def test_lazy_search_support_outcomes_are_persisted(core):
         db.add(Coin(id="native:BTC", symbol="BTC", status="pending_support", pricing_id="btc"))
         db.flush()
         db.add(CoinMapping(coin_id="native:BTC", pricing_id="btc"))
-    fake.responses.extend([search(token("one", "ethereum", evm.upper())), {"ethereum": "opaque"},
+    fake.responses.extend([search(token("one", "ethereum", evm.upper())),
                            search(token("none", "solana", "casesensitive")),
                            search(token("a", "ethereum", "same"), token("b", "base", "same")),
                            search(token("other", "base", "other")),
-                           _decode(Response(400, '{"message":"Not supported"}'), 0, "/token/addresses/other"),
-                           {"bitcoin": "opaque"}])
+                           {"bitcoin": "opaque"}, {"ethereum": "opaque"},
+                           _decode(Response(400, '{"message":"Not supported"}'), 0, "/token/addresses/other")])
 
     async def run():
         while await catalog.match_next(SimpleNamespace(account_id="a")):
@@ -385,8 +453,9 @@ def test_distributed_unknown_auth_failure_pauses_and_fails_over(core):
     assert gate.status_cache["a"][1] == "logged_out"
 
 
-def test_daily_matches_lazily_and_collects_every_supported_coin(core):
+def test_daily_matches_lazily_and_collects_every_supported_coin(core, settings):
     store, fake, _, gate, collectors = core
+    configure_matching(settings)
     collectors.catalog = CoinCatalog(store, gate)
     with store.begin() as db:
         pending(db, "alpha:1:Addr", "1", "Addr")
@@ -470,7 +539,7 @@ def test_catalog_deployments_serialize_without_internal_fields(settings):
             result = response.json()
             for coin in result if isinstance(result, list) else [result]:
                 assert set(coin) == {"id", "symbol", "pricing_id", "status", "reason", "sources",
-                                     "deployments", "matched_chains"}
+                                     "deployments", "matched_chains", "match_failures", "last_match_attempt"}
                 for deployment in coin["deployments"]:
                     assert set(deployment) == {"feed", "chain", "address", "deposit_enabled", "withdraw_enabled"}
 

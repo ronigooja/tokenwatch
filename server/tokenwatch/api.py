@@ -22,7 +22,7 @@ from .collectors import Collectors, snapshot_diff
 from .config import load_settings
 from .login_session import LoginSessions
 from . import novnc
-from .db import (Account, CatalogCache, CatalogExclusion, ChainObservation, Coin, CoinMapping, DailyBalance,
+from .db import (Account, CatalogCache, CatalogExclusion, CatalogSettings, ChainObservation, Coin, CoinMapping, DailyBalance,
                  DailyCollection, Event, Exclusion, FuturesMapping, Job, PushLog, Rule, Snapshot,
                  SnapshotRow, Subscription, Transfer, TransferCoin, now, open_store)
 from .scheduler import AccountUnavailable, RequestGate, Scheduler
@@ -184,7 +184,7 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
                 if run_scheduler:
                     task = asyncio.create_task(Scheduler(store, config, {
                         "daily": collectors.daily, "transfers": collectors.transfers, "coin_catalog": catalog.refresh,
-                    }).run())
+                    }, gate=gate).run())
             app.state.logins = LoginSessions(store, client, app.state.gate, config)
             yield
         finally:
@@ -254,6 +254,16 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
             observed[row.alpha_chain_id].append(row.arkham_chain)
         return [{"alpha_chain_id": chain, "arkham_chains": names, "conflict": len(names) > 1}
                 for chain, names in observed.items()]
+
+    @app.get("/coin-catalog/settings", response_model=s.CatalogSettingsInput, dependencies=auth)
+    def get_catalog_settings(db: DB):
+        return find(db, CatalogSettings, "matching")
+
+    @app.put("/coin-catalog/settings", response_model=s.CatalogSettingsInput, dependencies=auth)
+    def put_catalog_settings(body: s.CatalogSettingsInput, db: DB):
+        row = db.merge(CatalogSettings(key="matching", failure_limit=body.failure_limit))
+        db.flush()
+        return row
 
     @app.get("/coin-catalog/futures-mappings", response_model=list[s.FuturesMappingOut], dependencies=auth)
     def list_futures_mappings(db: DB):
@@ -439,6 +449,20 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
     @app.get("/coins/{coin_id}/mapping", response_model=s.MappingInput, dependencies=auth)
     def get_mapping(coin_id: s.CoinRef, db: DB):
         return find(db, CoinMapping, coin_id)
+
+    @app.post("/coins/{coin_id}/retry", response_model=s.CoinOut, dependencies=auth)
+    def retry_coin(coin_id: s.CoinRef, db: DB):
+        coin = find(db, Coin, coin_id)
+        if coin.status != "match_failed":
+            raise HTTPException(409, "Coin is not match_failed")
+        coin.match_failures, coin.last_match_attempt = 0, None
+        if db.get(CoinMapping, coin.id):
+            coin.manual_status = "pending_support"
+        else:
+            coin.match_status = "pending_support" if coin.automatic_pricing_id else None
+            coin.match_reason = None
+        sync_coin(db, coin)
+        return coin
 
     @app.put("/coins/{coin_id}/mapping", response_model=s.MappingInput, dependencies=auth)
     def put_mapping(coin_id: s.CoinRef, body: s.MappingInput, db: DB):

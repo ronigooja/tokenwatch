@@ -33,6 +33,14 @@ class Coin(Base):
     automatic_chains: Mapped[list] = mapped_column(default=list)
     manual_pricing_id: Mapped[str | None]
     manual_status: Mapped[str | None]
+    match_failures: Mapped[int] = mapped_column(default=0, server_default="0")
+    last_match_attempt: Mapped[float | None]
+
+
+class CatalogSettings(Base):
+    __tablename__ = "catalog_settings"
+    key: Mapped[str] = mapped_column(primary_key=True)
+    failure_limit: Mapped[int]
 
 
 class CoinMapping(Base):
@@ -272,13 +280,17 @@ def open_store(path: Path):
             Base.metadata.create_all(connection)
         elif version == 1:
             migrate_v1(connection)
-        elif version not in (2, 3):
+        elif version not in (2, 3, 4):
             raise RuntimeError(f"Unsupported database schema version: {version}")
         if version == 2:
             connection.exec_driver_sql("ALTER TABLE jobs ADD COLUMN last_error VARCHAR")
+        if version in (2, 3):
+            connection.exec_driver_sql("ALTER TABLE coins ADD COLUMN match_failures INTEGER NOT NULL DEFAULT 0")
+            connection.exec_driver_sql("ALTER TABLE coins ADD COLUMN last_match_attempt FLOAT")
+            CatalogSettings.__table__.create(connection, checkfirst=True)
         if version == 1 and connection.exec_driver_sql("PRAGMA foreign_key_check").first():
             raise RuntimeError("Foreign key violation after coin schema migration")
-        connection.execute(text("PRAGMA user_version=3"))
+        connection.execute(text("PRAGMA user_version=4"))
         connection.commit()
         connection.execute(text("PRAGMA foreign_keys=ON"))
     return sessionmaker(engine, expire_on_commit=False)
