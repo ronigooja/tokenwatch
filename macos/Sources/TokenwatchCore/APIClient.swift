@@ -1,12 +1,15 @@
 import Foundation
 
 public enum APIError: LocalizedError {
-    case invalidServer, invalidToken, invalidPath, invalidResponse, http(Int, String?), socketClosed
+    case invalidServer, invalidToken, emptyToken, invalidTokenCharacters, addressChangedWithoutToken, invalidPath, invalidResponse, http(Int, String?), socketClosed
 
     public var errorDescription: String? {
         switch self {
         case .invalidServer: return "Enter a valid HTTP or HTTPS server URL without credentials, a query, or a fragment."
         case .invalidToken: return "Enter a bearer token without spaces or control characters."
+        case .emptyToken: return "Enter a bearer token."
+        case .invalidTokenCharacters: return "The bearer token contains characters that are not allowed."
+        case .addressChangedWithoutToken: return "The server address changed. Paste the token for the new address."
         case .invalidPath: return "The resource ID is invalid."
         case .invalidResponse: return "The server returned an invalid response."
         case .http(401, _): return "The server rejected the bearer token."
@@ -41,7 +44,8 @@ public struct APIClient: Sendable {
               let scheme = components.scheme?.lowercased(), ["http", "https"].contains(scheme),
               let host = components.host, !host.isEmpty, components.user == nil, components.password == nil,
               components.query == nil, components.fragment == nil else { throw APIError.invalidServer }
-        guard !token.isEmpty, token.utf8.allSatisfy({ (33...126).contains($0) }) else { throw APIError.invalidToken }
+        guard !token.isEmpty else { throw APIError.emptyToken }
+        guard token.utf8.allSatisfy({ (33...126).contains($0) }) else { throw APIError.invalidTokenCharacters }
         self.server = server
         self.token = token
         self.session = session ?? Self.privateSession

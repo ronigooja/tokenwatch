@@ -15,7 +15,7 @@ private enum TokenStore {
         guard FileManager.default.fileExists(atPath: file.path) else { return nil }
         let text = String(data: try Data(contentsOf: file), encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let token = text, !token.isEmpty else { throw APIError.invalidToken }
+        guard let token = text, !token.isEmpty else { throw APIError.emptyToken }
         return token
     }
 
@@ -87,16 +87,17 @@ final class AppModel: ObservableObject {
         } catch { problem = error.localizedDescription }
     }
 
-    func save(address: String, token: String) throws {
+    func save(address: String, token: String, displayedMask: String = "") throws -> String {
         let address = address.trimmingCharacters(in: .whitespacesAndNewlines)
-        let effectiveToken: String
-        if token.isEmpty, address == serverAddress { effectiveToken = try TokenStore.load() ?? "" }
-        else { effectiveToken = token }
+        let effectiveToken = try TokenInput.resolve(entered: token, displayedMask: displayedMask,
+                                                    savedToken: TokenStore.load(), enteredAddress: address,
+                                                    savedAddress: serverAddress)
         let newClient = try makeClient(address: address, token: effectiveToken)
         try TokenStore.store(effectiveToken)
         UserDefaults.standard.set(address, forKey: "serverAddress")
         serverAddress = address
         connect(newClient)
+        return TokenMask.display(effectiveToken)
     }
 
     func forget() throws {
@@ -356,6 +357,7 @@ private struct SettingsView: View {
     @ObservedObject var model: AppModel
     @State private var address = ""
     @State private var token = ""
+    @State private var displayedMask = ""
     @State private var action = ActionState()
     @State private var confirming = false
     @FocusState private var addressFocused: Bool
@@ -363,7 +365,7 @@ private struct SettingsView: View {
     var body: some View {
         Form {
             TextField("Server URL", text: $address).focused($addressFocused)
-            SecureField("Bearer token", text: $token)
+            TextField("Bearer token", text: $token)
             Text("Use HTTPS for remote servers. Leave the token blank to reuse the saved token for the same URL.")
                 .foregroundStyle(.secondary)
             LabeledContent("Connection", value: model.status)
@@ -371,9 +373,9 @@ private struct SettingsView: View {
             HStack {
                 Button("Save and Connect") {
                     action.run {
-                        try model.save(address: address, token: token)
+                        token = try model.save(address: address, token: token, displayedMask: displayedMask)
+                        displayedMask = token
                         address = model.serverAddress
-                        token = ""
                     }
                 }
                 Button("Forget Server…", role: .destructive) { confirming = true }
@@ -387,10 +389,18 @@ private struct SettingsView: View {
             .disabled(action.busy)
             .defaultFocus($addressFocused, true)
             .navigationTitle("Settings")
-            .onAppear { address = model.serverAddress }
+            .onAppear {
+                address = model.serverAddress
+                do {
+                    if let saved = try TokenStore.load() {
+                        displayedMask = TokenMask.display(saved)
+                        token = displayedMask
+                    } else { token = ""; displayedMask = "" }
+                } catch { token = ""; displayedMask = "" }
+            }
             .confirmationDialog("Remove the server and its saved token?", isPresented: $confirming) {
                 Button("Forget Server", role: .destructive) {
-                    action.run { try model.forget(); address = ""; token = "" }
+                    action.run { try model.forget(); address = ""; token = ""; displayedMask = "" }
                 }
             }
     }

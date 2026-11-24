@@ -201,6 +201,38 @@ private let eventFixture = """
     """
 
 final class APIClientTests: XCTestCase {
+    func testTokenMaskAndInputResolution() throws {
+        XCTAssertEqual(TokenMask.display("abcdefghijk"), "••••••••hijk")
+        XCTAssertEqual(TokenMask.display("abc"), "•••")
+        XCTAssertEqual(TokenMask.display(""), "")
+        XCTAssertEqual(try TokenInput.resolve(entered: " masked ", displayedMask: "", savedToken: nil,
+                                               enteredAddress: "https://a", savedAddress: "https://a"), "masked")
+    }
+
+    func testTokenInputReusesOnlySameAddressAndTrimsTypedValue() throws {
+        XCTAssertEqual(try TokenInput.resolve(entered: "••••••••1234", displayedMask: "••••••••1234",
+                                               savedToken: "secret1234", enteredAddress: "https://a", savedAddress: "https://a"), "secret1234")
+        XCTAssertThrowsError(try TokenInput.resolve(entered: "••••••••1234", displayedMask: "••••••••1234",
+                                                    savedToken: "secret1234", enteredAddress: "https://b", savedAddress: "https://a")) {
+            guard case APIError.addressChangedWithoutToken = $0 else { XCTFail("Unexpected error"); return }
+        }
+        XCTAssertThrowsError(try TokenInput.resolve(entered: " \n", displayedMask: "", savedToken: "secret1234",
+                                                    enteredAddress: "https://b", savedAddress: "https://a")) {
+            guard case APIError.addressChangedWithoutToken = $0 else { XCTFail("Unexpected error"); return }
+        }
+        XCTAssertEqual(try TokenInput.resolve(entered: " \nfixture-token\t", displayedMask: "",
+                                               savedToken: nil, enteredAddress: "https://a", savedAddress: nil), "fixture-token")
+    }
+
+    func testTokenValidationErrors() throws {
+        XCTAssertThrowsError(try APIClient(server: URL(string: "https://a")!, token: "")) {
+            guard case APIError.emptyToken = $0 else { XCTFail("Unexpected error"); return }
+        }
+        XCTAssertThrowsError(try APIClient(server: URL(string: "https://a")!, token: "bad token")) {
+            guard case APIError.invalidTokenCharacters = $0 else { XCTFail("Unexpected error"); return }
+        }
+    }
+
     private func client(token: String = "fixture-token") throws -> APIClient {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [StubProtocol.self]
