@@ -152,6 +152,7 @@ class _PlaywrightSession:
     async def challenge_info(self) -> dict:
         title = (await self._page.title()).lower()
         boxes = []
+        failure = False
         for frame in self._page.frames:
             if urlsplit(frame.url).hostname != "challenges.cloudflare.com":
                 continue
@@ -159,8 +160,16 @@ class _PlaywrightSession:
             box = await element.bounding_box()
             if box and await element.is_visible():
                 boxes.append(box)
+            try:
+                failure = failure or bool(await frame.get_by_text("verification failed", exact=False).count())
+            except Exception:
+                pass
         markers = await self._page.locator('#challenge-stage, [id*="cf_chl"], [class*="cf_chl"]').count()
-        failure = await self._page.get_by_text("verification failed", exact=False).count()
+        try:
+            failure = failure or bool(await self._page.locator("#challenge-stage").get_by_text(
+                "verification failed", exact=False).count())
+        except Exception:
+            pass
         viewport = await self._page.evaluate("() => ({width: innerWidth, height: innerHeight})")
         return {"challenge": "just a moment" in title or bool(boxes) or bool(markers),
                 "boxes": boxes, "viewport": viewport, "failure": bool(failure)}

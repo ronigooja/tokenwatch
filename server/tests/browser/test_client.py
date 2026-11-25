@@ -171,6 +171,36 @@ class ResponseTests(unittest.TestCase):
 
 
 class ClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_challenge_initial_clear_and_disabled_and_legacy(self):
+        from unittest.mock import AsyncMock
+        for mode in ("self_clear", "disabled", "legacy", "no_challenge"):
+            with self.subTest(mode=mode):
+                session = FakeSession()
+                session.titles = deque(["Arkham"] if mode == "no_challenge" else ["Just a moment..."])
+                if mode != "legacy":
+                    session.click_challenge = AsyncMock()
+                    session.challenge_info = AsyncMock(return_value={"challenge": True, "boxes": [], "viewport": {}})
+                if mode == "self_clear":
+                    session.challenge_info.side_effect = [{"challenge": True}, {"challenge": False}]
+                client, _, _ = self.client(session, cf_wait_seconds=0.08, cf_click_initial_wait_seconds=0.02,
+                                            cf_click_wait_seconds=0.02, cf_click_enabled=mode != "disabled")
+                if mode in ("self_clear", "no_challenge"):
+                    if mode == "self_clear":
+                        with self.assertLogs("tokenwatch.browser.client", level="INFO") as logs:
+                            self.assertEqual(await client.get_json("one", "/user"), [])
+                        self.assertIn("attempts=0 result=skipped reason=cleared_without_click", logs.output[0])
+                    else:
+                        self.assertEqual(await client.get_json("one", "/user"), [])
+                        session.challenge_info.assert_not_awaited()
+                    session.click_challenge.assert_not_awaited()
+                else:
+                    with self.assertRaises(Blocked) as caught:
+                        await client.get_json("one", "/user")
+                    self.assertEqual((caught.exception.cause, caught.exception.click_attempts), ("challenge_timeout", 0))
+                    if mode == "disabled":
+                        session.challenge_info.assert_not_awaited()
+                        session.click_challenge.assert_not_awaited()
+
     async def test_click_episodes(self):
         class Challenge(FakeSession):
             def __init__(self, boxes, clear=False, error=False):
@@ -581,7 +611,7 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         session.titles = deque(["Just a moment..."])
         session.challenge_info = AsyncMock()
         session.click_challenge = AsyncMock()
-        client, _, _ = self.client(session, cf_wait_seconds=0, cf_click_enabled=False, idle_timeout=0.01)
+        client, _, _ = self.client(session, idle_timeout=0.01)
         ready = []
         login = asyncio.create_task(client.manual_login("one", ready=lambda: ready.append(session.opened)))
         with self.assertRaises(TimeoutError):

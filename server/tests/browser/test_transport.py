@@ -50,9 +50,29 @@ class BrowserDomTests(unittest.IsolatedAsyncioTestCase):
             await session.click_challenge({"x": 10, "y": 20, "width": 300, "height": 60}, 1)
         x, y = page.mouse.move.await_args.args
         self.assertTrue(10 <= x < 310 and 20 <= y < 80 and x < 800 and y < 600)
+        self.assertTrue(8 <= page.mouse.move.await_args.kwargs["steps"] <= 12)
         self.assertTrue(0.1 <= sleep.await_args.args[0] <= 0.2)
         page.mouse.down.assert_awaited_once()
         page.mouse.up.assert_awaited_once()
+
+    async def test_failure_text_only_in_challenge_context(self):
+        frame = MagicMock(url="https://challenges.cloudflare.com/widget")
+        frame.frame_element = AsyncMock(return_value=MagicMock(bounding_box=AsyncMock(return_value=None)))
+        frame.get_by_text.return_value.count = AsyncMock(return_value=0)
+        page = MagicMock(title=AsyncMock(return_value="Just a moment..."), frames=[frame],
+                         evaluate=AsyncMock(return_value={"width": 800, "height": 600}))
+        stage = MagicMock()
+        stage.get_by_text.return_value.count = AsyncMock(return_value=0)
+        page.locator.side_effect = lambda selector: stage if selector == "#challenge-stage" else MagicMock(count=AsyncMock(return_value=1))
+        page.get_by_text.return_value.count = AsyncMock(return_value=1)  # unrelated page text
+        session = _PlaywrightSession(MagicMock(), MagicMock(), page)
+        self.assertFalse((await session.challenge_info())["failure"])
+        page.get_by_text.assert_not_called()
+        frame.get_by_text.return_value.count.side_effect = RuntimeError("detached")
+        stage.get_by_text.return_value.count.return_value = 1
+        self.assertTrue((await session.challenge_info())["failure"])
+        stage.get_by_text.return_value.count.side_effect = RuntimeError("detached")
+        self.assertFalse((await session.challenge_info())["failure"])
     async def test_probe_recovery_never_repeats_fetch(self):
         page = MagicMock()
         page.wait_for_load_state = AsyncMock()

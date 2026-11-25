@@ -273,6 +273,26 @@ def test_config_environment_and_migration(settings, tmp_path, monkeypatch):
         store.kw["bind"].dispose()
 
 
+@pytest.mark.parametrize("attempts", [0, 2])
+def test_click_attempts_pause_event_and_warning(core, caplog, attempts):
+    store, fake, clock, gate, _ = core
+    error = Blocked("challenge", cause="challenge_timeout")
+    error.click_attempts = attempts
+    fake.responses.append(error)
+
+    async def run():
+        with pytest.raises(Blocked):
+            await gate.get("a", "/transfers", {})
+    asyncio.run(run())
+    with store() as db:
+        event = db.scalar(select(Event).order_by(Event.id.desc()))
+        assert event.kind == "account_paused"
+        assert event.data["click_attempts"] == attempts
+    warning = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("account_paused "))
+    for field in ("account_id=", "cause=", "source=", "endpoint=", "title=", "path=", "job_id=", "job_kind=", f"click_attempts={attempts}"):
+        assert field in warning
+
+
 @pytest.mark.parametrize("error", [AuthRequired(), Blocked(), RateLimited(retry_after=90)])
 def test_scheduler_pauses_and_respects_backoff(core, settings, error):
     store, fake, clock, gate, _ = core

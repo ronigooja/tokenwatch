@@ -329,99 +329,98 @@ class BrowserUpstreamClient:
                     self._failed_proxies.add(account.id)
                 await self._shutdown(account.id, session, forward)
 
-    async def _wait_for_challenge(self, session: BrowserSession, forward: Forward) -> None:
-        info_method = getattr(session, "challenge_info", None)
-        click_method = getattr(session, "click_challenge", None)
-        enabled = self._config.cf_click_enabled and callable(info_method) and callable(click_method)
+    @staticmethod
+    def _challenge_box(info):
+        boxes = info.get("boxes", [])
+        if len(boxes) != 1:
+            return None, "missing_or_ambiguous_box"
+        box = boxes[0]
+        try:
+            x, y, width, height = (box[k] for k in ("x", "y", "width", "height"))
+            viewport = info["viewport"]
+            valid = (all(type(v) in (int, float) and math.isfinite(v) for v in (x, y, width, height))
+                     and width >= 200 and height >= 40 and x >= 0 and y >= 0
+                     and x + width <= viewport["width"] and y + height <= viewport["height"])
+        except (KeyError, TypeError):
+            valid = False
+        return (box, None) if valid else (None, "implausible_box")
+
+    async def _challenge_episode(self, session, enabled, state):
+        loop = asyncio.get_running_loop()
+        end = loop.time() + self._config.cf_wait_seconds
+        next_click = loop.time() + self._config.cf_click_initial_wait_seconds
         attempts = 0
         reason = "disabled" if not self._config.cf_click_enabled else "unsupported"
-        result = "skipped"
+        inspect = enabled
+        can_click = enabled
+        while True:
+            info = None
+            if inspect:
+                try:
+                    info = await session.challenge_info()
+                except Exception:
+                    inspect = can_click = False
+                    reason = "inspection_failed"
+            active = info["challenge"] if info is not None else "just a moment" in (await session.title()).lower()
+            if not active:
+                return attempts, "cleared" if attempts else "skipped", "challenge_cleared" if attempts else "cleared_without_click", True
+            now = loop.time()
+            if now >= end:
+                break
+            if can_click and info.get("failure"):
+                can_click, reason = False, "failure_state"
+            if can_click and now >= next_click:
+                if attempts >= self._config.cf_click_max_attempts:
+                    can_click, reason = False, "attempt_limit"
+                elif end - now < self._config.cf_click_wait_seconds:
+                    can_click, reason = False, "insufficient_time"
+                else:
+                    box, error = self._challenge_box(info)
+                    if error:
+                        can_click, reason = False, error
+                    else:
+                        attempts += 1
+                        state.update(attempts=attempts, result="failed", reason="attempt_limit")
+                        try:
+                            await session.click_challenge(box, attempts)
+                        except Exception:
+                            can_click, reason = False, "click_error"
+                        else:
+                            next_click = loop.time() + self._config.cf_click_wait_seconds
+                            reason = "attempt_limit"
+            state["reason"] = reason
+            delay = 1 if attempts and inspect else 0.1
+            if can_click:
+                delay = min(delay, max(0.001, next_click - loop.time()))
+            await asyncio.sleep(min(delay, max(0, end - loop.time())))
+        return attempts, "failed" if attempts else "skipped", reason, False
 
-        async def challenged() -> bool:
+    async def _wait_for_challenge(self, session: BrowserSession, forward: Forward) -> None:
+        async def challenged():
             return "just a moment" in (await session.title()).lower()
 
-        if not enabled and not await _through(forward, challenged):
+        if not await _through(forward, challenged):
             return
-
-        async def run() -> bool:
-            nonlocal attempts, reason, result
-            loop = asyncio.get_running_loop()
-            end = loop.time() + self._config.cf_wait_seconds
-            next_click = loop.time() + self._config.cf_click_initial_wait_seconds
-            while True:
-                if enabled:
-                    try:
-                        info = await info_method()
-                    except Exception:
-                        info = None
-                    active = info["challenge"] if info is not None else await challenged()
-                else:
-                    info = None
-                    active = await challenged()
-                if not active:
-                    result, reason = ("cleared", "challenge_cleared") if attempts else ("skipped", "cleared_without_click")
-                    return True
-                now = loop.time()
-                if enabled and info is None:
-                    enabled_reason = "inspection_failed"
-                elif enabled and info.get("failure"):
-                    enabled_reason = "failure_state"
-                else:
-                    enabled_reason = None
-                if enabled_reason:
-                    reason = enabled_reason
-                    break
-                if enabled and now >= next_click and attempts < self._config.cf_click_max_attempts:
-                    if end - now < self._config.cf_click_wait_seconds:
-                        reason = "insufficient_time"
-                        break
-                    boxes, viewport = info.get("boxes", []), info.get("viewport", {})
-                    if len(boxes) != 1:
-                        reason = "missing_or_ambiguous_box"
-                        break
-                    box = boxes[0]
-                    try:
-                        x, y, width, height = (box[k] for k in ("x", "y", "width", "height"))
-                        valid = all(type(v) in (int, float) and math.isfinite(v) for v in (x, y, width, height)) and width >= 200 and height >= 40 and x >= 0 and y >= 0 and x + width <= viewport["width"] and y + height <= viewport["height"]
-                    except (KeyError, TypeError):
-                        valid = False
-                    if not valid:
-                        reason = "implausible_box"
-                        break
-                    attempts += 1
-                    result = "failed"
-                    try:
-                        await click_method(box, attempts)
-                    except Exception:
-                        reason = "click_error"
-                        break
-                    next_click = loop.time() + self._config.cf_click_wait_seconds
-                    reason = "attempt_limit"
-                if now >= end:
-                    return False
-                await asyncio.sleep(min(0.1 if not enabled or not attempts else 1, max(0, end - loop.time()), max(0.001, next_click - loop.time()) if enabled and attempts < self._config.cf_click_max_attempts else 1))
-            # No more clicks: preserve the existing wait-until-timeout behavior.
-            while True:
-                try:
-                    active = (await info_method())["challenge"] if enabled and info is not None else await challenged()
-                except Exception:
-                    active = await challenged()
-                if not active:
-                    result, reason = ("cleared", "challenge_cleared") if attempts else ("skipped", "cleared_without_click")
-                    return True
-                await asyncio.sleep(0.1)
-
+        enabled = (self._config.cf_click_enabled and callable(getattr(session, "challenge_info", None))
+                   and callable(getattr(session, "click_challenge", None)))
+        state = {"attempts": 0, "result": "skipped",
+                 "reason": "disabled" if not self._config.cf_click_enabled else "unsupported"}
+        # The timeout also bounds slow inspection and mouse operations.
+        async def episode():
+            attempts, result, reason, cleared = await self._challenge_episode(session, enabled, state)
+            state.update(attempts=attempts, result=result, reason=reason)
+            return cleared
         try:
             if self._config.cf_wait_seconds:
                 async with asyncio.timeout(self._config.cf_wait_seconds):
-                    if await _through(forward, run):
+                    if await _through(forward, episode):
                         return
         except TimeoutError:
             pass
         finally:
-            logger.info("cf_click attempts=%s result=%s reason=%s", attempts, result, reason)
+            logger.info("cf_click attempts=%s result=%s reason=%s", state["attempts"], state["result"], state["reason"])
         exc = Blocked("Browser Cloudflare challenge did not clear", cause="challenge_timeout")
-        exc.click_attempts = attempts
+        exc.click_attempts = state["attempts"]
         raise exc
 
     async def _shutdown(self, account_id: str, session: BrowserSession | None, forward: Forward) -> None:
