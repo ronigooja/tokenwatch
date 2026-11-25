@@ -271,6 +271,11 @@ class Scheduler:
             logger.warning("job_id=%s job_kind=%s endpoint=%s exception=%s status=%s detail=%s",
                            job.id, job.kind, endpoint, type(exc).__name__, status, exc.detail)
             return f"{category}[{exc.detail}] on {endpoint}"[:200]
+        if isinstance(exc, BadResponse) and endpoint == "/token/addresses/" and hasattr(exc, "token_addresses_shape"):
+            shape = exc.token_addresses_shape
+            logger.warning("job_id=%s job_kind=%s endpoint=%s exception=%s status=%s shape=%s",
+                           job.id, job.kind, endpoint, type(exc).__name__, status, shape)
+            return f"{category}[{shape}] on {endpoint}"[:200]
         logger.warning("job_id=%s job_kind=%s endpoint=%s exception=%s status=%s",
                        job.id, job.kind, endpoint, type(exc).__name__, status)
         return f"{category} on {endpoint}"[:200]

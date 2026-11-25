@@ -524,6 +524,60 @@ def test_lazy_search_support_outcomes_are_persisted(core, settings):
         evm, "CaseSensitive", "same", "other"]
 
 
+@pytest.mark.parametrize("payload,shape,expected", [
+    ({}, "type=dict keys=0 str=0 int=0 float=0 bool=0 null=0 list=0 dict=0 message=0 empty_keys=0 max_str=none", "error"),
+    ([], "type=list keys=0 str=0 int=0 float=0 bool=0 null=0 list=0 dict=0 message=0 empty_keys=0 max_str=none", "error"),
+    ({"ethereum": ["0xSECRET"]}, "type=dict keys=1 str=0 int=0 float=0 bool=0 null=0 list=1 dict=0 message=0 empty_keys=0 max_str=none", "error"),
+    ({"ethereum": {"secretkey": 1}}, "type=dict keys=1 str=0 int=0 float=0 bool=0 null=0 list=0 dict=1 message=0 empty_keys=0 max_str=none", "error"),
+    ({"message": "secretvalue", "ethereum": "0xSECRET"}, "type=dict keys=2 str=2 int=0 float=0 bool=0 null=0 list=0 dict=0 message=1 empty_keys=0 max_str=<=64", "error"),
+    ({"ethereum": "0xSECRET"}, None, "supported"),
+    (_decode(Response(400, '{"message":"secretvalue"}'), 0, "/token/addresses/id"), None, "unsupported"),
+])
+def test_support_shape_through_scheduler(core, settings, caplog, payload, shape, expected):
+    store, fake, clock, gate, _ = core
+    configure_matching(settings)
+    catalog = CoinCatalog(store, gate, transport=mock_feeds(catalog_feeds(), []), clock=clock)
+    with store.begin() as db:
+        db.add(Coin(id="native:TEST", symbol="TEST", status="pending_support", pricing_id="test"))
+        db.flush()
+        db.add(CoinMapping(coin_id="native:TEST", pricing_id="test"))
+        job = Job(kind="coin_catalog", account_id="a", enabled=True, interval_seconds=60)
+        db.add(job)
+        db.flush()
+        job_id = job.id
+    fake.responses.append(payload)
+    scheduler = Scheduler(store, settings, {"coin_catalog": catalog.match_next}, clock, gate)
+    with store() as db:
+        job = db.get(Job, job_id)
+    asyncio.run(scheduler.run_job(job))
+    with store() as db:
+        coin, account, job = db.get(Coin, "native:TEST"), db.get(Account, "a"), db.get(Job, job_id)
+        assert account.status == "active"
+        if expected == "error":
+            assert (coin.status, coin.match_failures, account.failures) == ("pending_support", 1, 1)
+            assert account.available_at == clock() + settings.backoff_initial
+            assert job.last_error == f"BadResponse[{shape}] on /token/addresses/"
+            assert len(job.last_error) <= 200
+            assert f"exception=BadResponse status=None shape={shape}" in caplog.text
+            assert all(secret not in caplog.text + job.last_error for secret in ("ethereum", "0xSECRET", "secretvalue", "secretkey"))
+        else:
+            assert (coin.status, coin.match_failures, account.failures, job.last_error) == (expected, 0, 0, None)
+    assert fake.calls == [("a", "/token/addresses/test", None)]
+
+
+def test_support_shape_counts_and_buckets():
+    from tokenwatch.coins import support_status
+    payload = {"": "a" * 257, "i": 1, "f": 1.5, "b": True, "n": None, "l": [], "d": {}}
+    with pytest.raises(BadResponse) as error:
+        support_status(payload)
+    assert str(error.value) == ("invalid token addresses payload: type=dict keys=7 str=1 int=1 float=1 "
+                                "bool=1 null=1 list=1 dict=1 message=0 empty_keys=1 max_str=>256")
+    with pytest.raises(BadResponse) as error:
+        support_status({str(i): "x" * 65 for i in range(1001)} | {"message": "secret"})
+    assert "keys=999 str=999" in str(error.value) and "max_str=<=256" in str(error.value)
+    assert len(str(error.value)) <= 200
+
+
 @pytest.mark.parametrize("status,path,body,paused", [
     (400, "/token/addresses/id", '{"message":"unsupported"}', False),
     (400, "/token/addresses/id", '{"message":"unsupported","extra":1}', True),

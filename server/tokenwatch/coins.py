@@ -240,13 +240,37 @@ def search_candidates(payload):
     return result
 
 
+def token_addresses_shape(payload):
+    types = {str: "str", int: "int", float: "float", bool: "bool", type(None): "null", list: "list", dict: "dict"}
+    top = types.get(type(payload), "other")
+    values = payload.values() if type(payload) is dict else ()
+    counts = dict.fromkeys(types.values(), 0)
+    max_length = None
+    for value in values:
+        kind = types.get(type(value))
+        if kind:
+            counts[kind] = min(999, counts[kind] + 1)
+        if type(value) is str:
+            max_length = max(max_length or 0, len(value))
+    length = "none" if max_length is None else "<=64" if max_length <= 64 else "<=256" if max_length <= 256 else ">256"
+    keys = min(len(payload), 999) if type(payload) is dict else 0
+    empty = min(sum(key == "" for key in payload), 999) if type(payload) is dict else 0
+    message = int(type(payload) is dict and "message" in payload)
+    return (f"type={top} keys={keys} str={counts['str']} int={counts['int']} float={counts['float']} "
+            f"bool={counts['bool']} null={counts['null']} list={counts['list']} dict={counts['dict']} "
+            f"message={message} empty_keys={empty} max_str={length}")
+
+
 def support_status(payload):
     if payload is UNSUPPORTED_TOKEN:
         return "unsupported"
     if not isinstance(payload, dict) or not payload or not all(
         isinstance(chain, str) and chain and isinstance(value, str) for chain, value in payload.items()
     ) or "message" in payload:
-        raise BadResponse("invalid token addresses payload")
+        shape = token_addresses_shape(payload)
+        exc = BadResponse(f"invalid token addresses payload: {shape}")
+        exc.token_addresses_shape = shape
+        raise exc
     return "supported"
 
 
