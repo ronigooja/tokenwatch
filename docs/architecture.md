@@ -17,7 +17,7 @@ Python server on a Linux host; SwiftUI macOS client. Upstream data is documented
 - **Rule engine**: evaluates rules from the database against new transfers and balance data, and emits events with a level.
 - **Store**: SQLite in WAL mode.
 - **API**: REST for queries and configuration, WebSocket for live events. `GET /coins/{coin_id}/entities?days=N` lists entities recorded in the inclusive UTC lookback window with their latest name, type, balance, USD value, and date; `GET /balances` returns selected entity curves and collection coverage.
-- **macOS client**: menu bar app that views, filters, and configures data, and shows local notifications. It receives pushes only while running. After connecting to the [WebSocket channel](#components), it loads the account list and applies subsequent account updates to the Accounts page; reconnects and resyncs reload the list.
+- **macOS client**: menu bar app that views, filters, and configures data, and shows local notifications. It receives pushes only while running. After connecting to the [WebSocket channel](#websocket-messages), it loads the account list and applies subsequent account updates to the Accounts page; reconnects and resyncs reload the list.
 
 ## Data flow
 
