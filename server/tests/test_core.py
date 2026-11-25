@@ -456,6 +456,59 @@ def test_daily_truncation_exclusion_and_balance_rule(core):
                                 "balanceMin": "200", "pricingIds": "abc", "limit": "50", "offset": "0"}
 
 
+@pytest.mark.parametrize("value", [100000, 100000.0, 100000.5, -1, True])
+def test_snapshot_and_job_balance_min_validation(settings, value):
+    fake = FakeUpstream()
+    app = create_app(settings, fake, run_scheduler=False)
+    with TestClient(app, headers={"Authorization": "Bearer test-token"}) as client:
+        with app.state.store.begin() as db:
+            db.add(Account(id="a", proxy_ref="p"))
+        valid = type(value) is not bool and value >= 0 and value == int(value)
+        if valid:
+            fake.responses.append([])
+        response = client.post("/snapshots", json={"account_id": "a", "pricing_ids": ["abc"], "balance_min": value})
+        assert response.status_code == (201 if valid else 422)
+        if valid:
+            assert fake.calls[0][2]["balanceMin"] == "100000"
+            assert response.json()["balance_min"] == 100000.0
+        else:
+            assert not fake.calls
+        response = client.post("/jobs", json={"kind": "daily", "account_id": "a", "interval_seconds": 60,
+                                               "options": {"balance_min": value}})
+        assert response.status_code == (201 if valid else 422)
+
+
+@pytest.mark.parametrize("value", [100000, 100000.0, 100000.5])
+def test_stored_daily_balance_min_through_scheduler(core, settings, value):
+    store, fake, clock, gate, collectors = core
+    with store.begin() as db:
+        job = Job(account_id="a", kind="daily", interval_seconds=60, enabled=True, options={"balance_min": value})
+        db.add(job)
+        db.flush()
+        job_id = job.id
+    if value != 100000.5:
+        fake.responses.append([])
+    with store() as db:
+        job = db.get(Job, job_id)
+    asyncio.run(Scheduler(store, settings, {"daily": collectors.daily}, clock, gate).run_job(job))
+    with store() as db:
+        account, job = db.get(Account, "a"), db.get(Job, job_id)
+        assert account.status == "active" and account.failures == 0
+        if value == 100000.5:
+            assert not fake.calls and job.last_error == "ValueError on unknown"
+        else:
+            assert fake.calls[0][2]["balanceMin"] == "100000" and job.last_error is None
+
+
+def test_snapshot_old_float_row_serializes(settings):
+    from tokenwatch.db import Snapshot
+    app = create_app(settings, run_scheduler=False)
+    with TestClient(app, headers={"Authorization": "Bearer test-token"}) as client:
+        with app.state.store.begin() as db:
+            db.add(Snapshot(interval="7d", balance_min=100000.5, pricing_ids=["abc"], truncated=False))
+        assert client.get("/snapshots").json()[0]["balance_min"] == 100000.5
+
+
 def test_transfer_rules_cooldown_merge_and_filters(core):
     store, fake, clock, _, collectors = core
     conditions = {"coins_include": ["ABC"], "min_usd": 300, "entities_include": ["e"], "direction": "inbound"}

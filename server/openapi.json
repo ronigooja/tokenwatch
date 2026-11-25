@@ -3704,7 +3704,7 @@
           "balance_min": {
             "anyOf": [
               {
-                "type": "number",
+                "type": "integer",
                 "minimum": 0.0
               },
               {
@@ -4302,7 +4302,7 @@
           "balance_min": {
             "anyOf": [
               {
-                "type": "number",
+                "type": "integer",
                 "minimum": 0.0
               },
               {

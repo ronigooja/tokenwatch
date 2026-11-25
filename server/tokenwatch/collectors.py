@@ -19,7 +19,10 @@ def balance_params(interval, balance_min, pricing_ids):
     params = {"interval": interval, "orderBy": "balance_usd_pct_change", "orderDir": "desc",
               "limit": str(BALANCE_LIMIT), "offset": "0"}
     if balance_min is not None:
-        params["balanceMin"] = str(balance_min)
+        if (type(balance_min) not in (int, float) or balance_min < 0 or
+                type(balance_min) is float and (not math.isfinite(balance_min) or not balance_min.is_integer())):
+            raise ValueError("balance_min must be a non-negative integer")
+        params["balanceMin"] = str(int(balance_min))
     if pricing_ids:
         params["pricingIds"] = ",".join(pricing_ids)
     return params

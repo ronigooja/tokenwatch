@@ -1,7 +1,7 @@
 from datetime import date, datetime, timezone
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AfterValidator, BeforeValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def safe_ref(value: str) -> str:
@@ -14,6 +14,15 @@ Ref = Annotated[str, Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"), Aft
 CoinRef = Annotated[str, Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$")]
 CatalogSymbol = Annotated[str, Field(min_length=1)]
 NonNegative = Annotated[float, Field(ge=0, allow_inf_nan=False)]
+
+
+def reject_bool(value):
+    if isinstance(value, bool):
+        raise ValueError("balance_min must be a non-negative integer")
+    return value
+
+
+BalanceMin = Annotated[int, Field(ge=0), BeforeValidator(reject_bool)]
 Positive = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 Interval = Literal["7d", "14d", "30d"]
 TransferDirection = Literal["inbound", "outbound", "internal", "entity_to_entity", "unknown"]
@@ -175,7 +184,7 @@ class CatalogExclusionOut(ExclusionInput):
 
 
 class JobOptions(Schema):
-    balance_min: NonNegative | None = None
+    balance_min: BalanceMin | None = None
 
 
 class JobInput(Schema):
@@ -292,7 +301,7 @@ class BalanceCurve(Schema):
 class SnapshotInput(Schema):
     account_id: Ref
     interval: Interval = "7d"
-    balance_min: NonNegative | None = None
+    balance_min: BalanceMin | None = None
     pricing_ids: Annotated[list[Ref], Field(min_length=1, max_length=50)] | None = None
 
 
