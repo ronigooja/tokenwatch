@@ -61,6 +61,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var serverAddress = UserDefaults.standard.string(forKey: "serverAddress") ?? ""
     @Published private(set) var notifications = UserDefaults.standard.bool(forKey: "notifications")
 
+    let accountStore = AccountStore()
     private let presenter = NotificationPresenter()
     private var stream: Task<Void, Never>?
     private var refresh: Task<Void, Never>?
@@ -137,6 +138,7 @@ final class AppModel: ObservableObject {
     private func connect(_ client: APIClient?) {
         stream?.cancel()
         refresh?.cancel()
+        accountStore.clear()
         self.client = client
         revision = UUID()
         recent = []
@@ -154,16 +156,20 @@ final class AppModel: ObservableObject {
         stream = Task { [weak self] in
             await EventStream(client: client).run { [weak self] state in
                 await self?.update(state, client: client, generation: generation)
-            } onEvent: { [weak self] event in
-                await self?.receive(event, generation: generation)
+            } onMessage: { [weak self] message in
+                await self?.receiveMessage(message, client: client, generation: generation)
             }
         }
     }
 
-    private func update(_ state: StreamState, client: APIClient, generation: UUID) {
+    private func update(_ state: StreamState, client: APIClient, generation: UUID) async {
         guard revision == generation else { return }
         streamState = state
-        if state == .connected { refreshRecent(using: client, generation: generation) }
+        if state == .connected {
+            refreshRecent(using: client, generation: generation)
+            do { try await accountStore.reload { try await client.accounts() } }
+            catch { if revision == generation { problem = error.localizedDescription } }
+        }
     }
 
     private func refreshRecent(using client: APIClient, generation: UUID) {
@@ -193,6 +199,13 @@ final class AppModel: ObservableObject {
                 self.problem = error.localizedDescription
             }
         }
+    }
+
+    private func receiveMessage(_ message: StreamMessage, client: APIClient, generation: UUID) async {
+        guard revision == generation else { return }
+        if case .event(let event) = message { receive(event, generation: generation); return }
+        do { try await accountStore.apply(message) { try await client.accounts() } }
+        catch { if revision == generation { problem = error.localizedDescription } }
     }
 
     private func receive(_ event: Event, generation: UUID) {
@@ -346,7 +359,7 @@ private struct MainView: View {
         case .jobs: JobsView(client: client)
         case .rules: RulesView(client: client)
         case .catalog: CatalogRulesView(client: client)
-        case .accounts: AccountsView(client: client)
+        case .accounts: AccountsView(client: client, store: model.accountStore)
         case .settings: EmptyView()
         }
     }
