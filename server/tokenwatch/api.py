@@ -1,5 +1,6 @@
 import asyncio
 import secrets
+import unicodedata
 from collections import defaultdict
 from contextlib import asynccontextmanager, suppress
 from datetime import date, datetime, timedelta, timezone
@@ -17,7 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import schemas as s
-from .coins import CoinCatalog, deployment_keys, sync_coin
+from .coins import CoinCatalog, SEARCH_PATH, deployment_keys, search_candidates, sync_coin
 from .collectors import Collectors, snapshot_diff
 from .config import load_settings
 from .login_session import LoginSessions
@@ -25,7 +26,7 @@ from . import novnc
 from .db import (Account, CatalogCache, CatalogExclusion, CatalogSettings, ChainObservation, Coin, CoinMapping, DailyBalance,
                  DailyCollection, Event, Exclusion, FuturesMapping, Job, PushLog, Rule, Snapshot,
                  SnapshotRow, Subscription, Transfer, TransferCoin, now, open_store)
-from .scheduler import AccountUnavailable, RequestGate, Scheduler
+from .scheduler import AccountUnavailable, DistributionWait, RequestGate, Scheduler
 from .upstream import UpstreamError
 from .browser.config import AccountConfig, proxy_parts
 from .browser.timezone import detect_timezone
@@ -260,6 +261,32 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
                 "attempted_at": cache.attempted_at if cache else None,
                 "refreshed_at": cache.refreshed_at if cache else None,
                 "error": cache.error if cache else None}
+
+    @app.get("/coin-catalog/search", dependencies=auth)
+    async def search_catalog(request: Request, query: str):
+        if any(unicodedata.category(char) == "Cc" for char in query):
+            raise HTTPException(422, "Invalid query")
+        query = query.strip()
+        if not query or len(query) > 64:
+            raise HTTPException(422, "Invalid query")
+        gate = request.app.state.gate
+        if gate is None:
+            raise HTTPException(503, "No upstream account available")
+        timeout = gate.upstream._config.request_timeout
+        try:
+            async with asyncio.timeout(timeout):
+                while True:
+                    try:
+                        candidates = await gate.get(None, SEARCH_PATH, {"query": query}, search_candidates, single=True)
+                        return {"query": query, "candidates": candidates}
+                    except DistributionWait as exc:
+                        if exc.reason == "no_eligible_account":
+                            raise HTTPException(503, "No upstream account available") from None
+                        await asyncio.sleep(max(0, exc.retry_at - gate.clock()))
+        except (TimeoutError, AccountUnavailable):
+            raise HTTPException(503, "Upstream unavailable") from None
+        except UpstreamError:
+            raise HTTPException(502, "Upstream request failed") from None
 
     @app.get("/coin-catalog/chains", response_model=list[s.ChainObservationOut], dependencies=auth)
     def list_chain_observations(db: DB):

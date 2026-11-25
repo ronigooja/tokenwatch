@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import re
 import time
 from collections import defaultdict
@@ -209,6 +210,34 @@ def search_matches(payload, address):
             if isinstance(chain, str) and chain and isinstance(contract, str) and contract and normalize(contract) == normalize(address):
                 matches[pricing_id].add(chain)
     return matches
+
+
+def search_candidates(payload):
+    tokens = payload.get("tokens") if isinstance(payload, dict) else None
+    result = []
+    for token in tokens if isinstance(tokens, list) else []:
+        if not isinstance(token, dict):
+            continue
+        identifier = token.get("identifier")
+        pricing_id = identifier.get("pricingID") if isinstance(identifier, dict) else None
+        if not isinstance(pricing_id, str) or not PRICING_ID.fullmatch(pricing_id) or ".." in pricing_id:
+            continue
+        item = {"pricing_id": pricing_id}
+        for key in ("name", "symbol"):
+            if isinstance(token.get(key), str):
+                item[key] = token[key]
+        for key in ("rank", "marketCap", "market_cap", "price"):
+            value = token.get(key)
+            if type(value) is int or type(value) is float and math.isfinite(value):
+                item[key] = value
+        deployments = token.get("deployments")
+        if isinstance(deployments, list):
+            item["chains"] = list(dict.fromkeys(d["chain"] for d in deployments
+                                if isinstance(d, dict) and isinstance(d.get("chain"), str) and d["chain"]))
+        result.append(item)
+        if len(result) == 20:
+            break
+    return result
 
 
 def support_status(payload):

@@ -101,17 +101,17 @@ class RequestGate:
             self.status_cache.pop(account_id, None)
             return "unknown"
 
-    async def get(self, account_id, path, params, decode=lambda value: value, probe=False):
+    async def get(self, account_id, path, params, decode=lambda value: value, probe=False, single=False):
         if self.closing:
             raise asyncio.CancelledError()
         task = asyncio.current_task()
         self.in_flight.add(task)
         try:
-            return await self._dispatch(account_id, path, params, decode, probe)
+            return await self._dispatch(account_id, path, params, decode, probe, single)
         finally:
             self.in_flight.discard(task)
 
-    async def _dispatch(self, account_id, path, params, decode, probe):
+    async def _dispatch(self, account_id, path, params, decode, probe, single=False):
         if account_id is None:
             while True:
                 if self.closing:
@@ -139,6 +139,8 @@ class RequestGate:
                 try:
                     return await self._get(account.id, path, params, decode, probe)
                 except PAUSING_ERRORS as exc:
+                    if single:
+                        raise
                     log_pause(account.id, pause_details(exc, path, probe), "account_retry")
                     continue
                 except AccountUnavailable:
