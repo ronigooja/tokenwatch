@@ -28,6 +28,7 @@ Browser readiness and safe pre-fetch probing are described in [architecture.md](
 - Omitting `pricingIds` returns entities with per-coin `tokenBalances`. Manual snapshots encode multiple pricing IDs as one comma-separated parameter.
 - `interval` values used by the page: `7d`, `14d`, `30d`.
 - Responses are JSON; transfers are under `transfers`, balance changes are a top-level array.
+- Other HTTP 400/403 rejections retain normal account pause behavior and include `reject_detail` in pause events and warnings. For a JSON object it contains up to eight top-level key names, each cleaned and capped at 24 characters, and a string `message` cleaned and capped at 120 characters; cleaning removes control characters and collapses whitespace. Non-object bodies expose only `json-nonobject` or `non-json` and a length bucket (`<=256`, `<=2048`, or `>2048` characters). The message and key names are upstream-controlled and can contain sensitive information.
 - Login probes require a nonempty JSON object after successful HTTP decoding; they do not assume an account identifier field name. Status cache behavior is defined in [architecture.md](architecture.md).
 - Matching failure tracking, retry ordering, and configuration are defined in [architecture.md](architecture.md#coin-list); account gate and backoff behavior remains in effect for each request.
 

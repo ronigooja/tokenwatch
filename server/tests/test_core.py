@@ -293,6 +293,55 @@ def test_click_attempts_pause_event_and_warning(core, caplog, attempts):
         assert field in warning
 
 
+@pytest.mark.parametrize("status,body,detail", [
+    (400, '{"message":"invalid pricingIds"}', {"type": "object", "keys": ["message"], "message": "invalid pricingIds"}),
+    (400, json.dumps({"message": "first\n second\t" + "x" * 150}),
+     {"type": "object", "keys": ["message"], "message": ("first second" + "x" * 150)[:120]}),
+    (400, '["secret"]', {"type": "json-nonobject", "length": "<=256"}),
+    (400, '<html>secret</html>', {"type": "non-json", "length": "<=256"}),
+    (403, '{"message":"forbidden", "private":"secret"}',
+     {"type": "object", "keys": ["message", "private"], "message": "forbidden"}),
+])
+def test_rejected_response_pause_diagnostic(core, settings, caplog, status, body, detail):
+    from tokenwatch.browser.client import _decode
+    from tokenwatch.browser.transport import Response
+    store, fake, clock, gate, _ = core
+    with pytest.raises(RequestRejected) as caught:
+        _decode(Response(status, body), clock(), "/intelligence/entity_balance_changes")
+    fake.responses.append(caught.value)
+    with pytest.raises(RequestRejected):
+        asyncio.run(gate.get("a", "/intelligence/entity_balance_changes", {"secret": "secret"}))
+    with store() as db:
+        account = db.get(Account, "a")
+        event = db.scalar(select(Event).order_by(Event.id.desc()))
+        assert (account.status, account.pause_reason, account.failures) == ("paused", "RequestRejected", 1)
+        assert event.data["status"] == status and json.loads(event.data["reject_detail"]) == detail
+        assert set(event.data) == {"account_id", "reason", "source", "endpoint", "status", "reject_detail"}
+    warning = next(record.getMessage() for record in caplog.records if record.getMessage().startswith("account_paused "))
+    for field in ("account_id=", "cause=", "source=", "endpoint=", "title=", "path=", "job_id=", "job_kind=", "click_attempts=", "reject_detail="):
+        assert field in warning
+    assert "\n" not in warning and "secret" not in warning
+
+
+def test_reject_detail_bounds_and_other_paths(core):
+    from tokenwatch.browser.client import _decode
+    from tokenwatch.browser.transport import Response
+    from tokenwatch.upstream import UNSUPPORTED_TOKEN
+    from tokenwatch.scheduler import pause_details
+    body = json.dumps({"longkey" * 8 + str(i): "secret" for i in range(10)})
+    with pytest.raises(RequestRejected) as caught:
+        _decode(Response(400, body), 0, "/transfers")
+    detail = json.loads(caught.value.reject_detail)
+    assert len(detail["keys"]) == 8 and all(len(key) == 24 for key in detail["keys"])
+    assert "secret" not in caught.value.reject_detail
+    assert _decode(Response(400, '{"message":"secret"}'), 0, "/token/addresses/id") is UNSUPPORTED_TOKEN
+    for response, exception in [(Response(401, '{}'), AuthRequired), (Response(429, '{}'), RateLimited),
+                                (Response(403, 'Just a moment'), Blocked)]:
+        with pytest.raises(exception) as error:
+            _decode(response, 0, "/transfers")
+        assert "reject_detail" not in pause_details(error.value, "/transfers", False)
+
+
 @pytest.mark.parametrize("error", [AuthRequired(), Blocked(), RateLimited(retry_after=90)])
 def test_scheduler_pauses_and_respects_backoff(core, settings, error):
     store, fake, clock, gate, _ = core

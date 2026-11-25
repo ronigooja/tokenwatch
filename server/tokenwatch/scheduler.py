@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import random
 import time
@@ -32,13 +33,16 @@ def pause_details(exc, path, probe):
         value = getattr(exc, key, None)
         if value is not None:
             result[key] = value
+    if isinstance(exc, RequestRejected) and getattr(exc, "reject_detail", None) is not None:
+        result["reject_detail"] = exc.reject_detail
     return result
 
 
 def log_pause(account_id, details, label="account_paused"):
-    logger.warning("%s account_id=%s cause=%s source=%s endpoint=%s title=%s path=%s job_id=%s job_kind=%s click_attempts=%s",
+    logger.warning("%s account_id=%s cause=%s source=%s endpoint=%s title=%s path=%s job_id=%s job_kind=%s click_attempts=%s reject_detail=%s",
                    label, account_id, details.get("cause"), details["source"], details["endpoint"],
-                   details.get("title", ""), details.get("page", ""), details.get("job_id"), details.get("job_kind"), details.get("click_attempts"))
+                   details.get("title", ""), details.get("page", ""), details.get("job_id"), details.get("job_kind"), details.get("click_attempts"),
+                   json.dumps(details.get("reject_detail"), ensure_ascii=True))
 
 
 class AccountUnavailable(Exception):

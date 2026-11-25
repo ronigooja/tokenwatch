@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import time
+import unicodedata
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
@@ -62,6 +63,26 @@ def _invalid_json_constant(value: str) -> None:
     raise ValueError
 
 
+def _reject_detail(body: str) -> str:
+    def clean(value, limit):
+        return " ".join("".join(char for char in value if not unicodedata.category(char).startswith("C")).split())[:limit]
+
+    try:
+        parsed = json.loads(body, parse_constant=_invalid_json_constant)
+    except (ValueError, RecursionError):
+        parsed, kind = None, "non-json"
+    else:
+        kind = "json-nonobject"
+    if isinstance(parsed, dict):
+        result = {"type": "object", "keys": [clean(key, 24) for key in list(parsed)[:8]]}
+        if isinstance(parsed.get("message"), str):
+            result["message"] = clean(parsed["message"], 120)
+    else:
+        length = len(body)
+        result = {"type": kind, "length": "<=256" if length <= 256 else "<=2048" if length <= 2048 else ">2048"}
+    return json.dumps(result, ensure_ascii=True, separators=(",", ":"))
+
+
 def _decode(response: Response, now: float, path: str = "") -> Any:
     if response.status == 401 or "denied at anonymous" in response.body.lower():
         raise AuthRequired("Upstream login required")
@@ -82,7 +103,9 @@ def _decode(response: Response, now: float, path: str = "") -> Any:
         if isinstance(body, dict) and set(body) == {"message"}:
             return UNSUPPORTED_TOKEN
     if response.status in (400, 403):
-        raise RequestRejected(f"Unexpected upstream HTTP status: {response.status}", status=response.status)
+        exc = RequestRejected(f"Unexpected upstream HTTP status: {response.status}", status=response.status)
+        exc.reject_detail = _reject_detail(response.body)
+        raise exc
     if not 200 <= response.status < 300:
         raise BadResponse(f"Unexpected upstream HTTP status: {response.status}", status=response.status)
     try:
