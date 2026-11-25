@@ -123,7 +123,10 @@ final class AppModel: ObservableObject {
 
     func coinLabel(_ id: String) -> String { coinNames?.label(id) ?? id }
 
-    func resolveCoins(_ ids: [String?]) async { await coinNames?.resolve(ids) }
+    func resolveCoins(_ ids: [String?], within timeout: Duration = .seconds(3)) async {
+        guard let names = coinNames else { return }
+        await BoundedWait.wait(for: Task { await names.resolve(ids) }, within: timeout)
+    }
 
     func mark(_ event: Event) async throws {
         guard let client else { return }
@@ -179,7 +182,8 @@ final class AppModel: ObservableObject {
         streamState = state
         if state == .connected {
             refreshRecent(using: client, generation: generation)
-            await coinNames?.load()
+            let names = coinNames
+            Task { await names?.load() }
             do { try await accountStore.reload { try await client.accounts() } }
             catch { if revision == generation { problem = error.localizedDescription } }
         }

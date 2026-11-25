@@ -10,6 +10,7 @@ extension APIClient: CoinListing {}
 @MainActor
 public final class CoinNames: ObservableObject {
     @Published public private(set) var symbols: [String: String] = [:]
+    public private(set) var missing: Set<String> = []
     private let source: CoinListing
     private var inFlight: Task<Bool, Never>?
 
@@ -17,24 +18,34 @@ public final class CoinNames: ObservableObject {
 
     public func label(_ id: String) -> String { symbols[id] ?? id }
 
-    /// Fetches the full coin list. Concurrent calls share one request. Returns false and keeps the current symbols when the request fails.
+    /// Fetches the full coin list and clears `missing`. Returns false and keeps the current state when the request fails.
     @discardableResult
     public func load() async -> Bool {
-        if let inFlight { return await inFlight.value }
-        let task = Task { await fetch() }
-        inFlight = task
-        let loaded = await task.value
-        inFlight = nil
+        let loaded = await fetch()
+        if loaded { missing = [] }
         return loaded
     }
 
-    /// Refreshes the list when any ID has no symbol yet.
+    /// Fetches only when an id is neither known nor already recorded as missing. Ids still unknown after a successful fetch are recorded as missing.
     public func resolve(_ ids: [String?]) async {
-        guard ids.contains(where: { $0.map { symbols[$0] == nil } ?? false }) else { return }
-        await load()
+        let unresolved = Set(ids.compactMap { $0 }).filter { symbols[$0] == nil && !missing.contains($0) }
+        guard !unresolved.isEmpty else { return }
+        guard await fetch() else { return }
+        missing.formUnion(unresolved.filter { symbols[$0] == nil })
     }
 
     private func fetch() async -> Bool {
+        if let inFlight { return await inFlight.value }
+        let task = Task { () -> Bool in
+            let loaded = await self.perform()
+            self.inFlight = nil
+            return loaded
+        }
+        inFlight = task
+        return await task.value
+    }
+
+    private func perform() async -> Bool {
         guard let coins = try? await source.coins(nil) else { return false }
         symbols = Dictionary(coins.map { ($0.id, $0.symbol) }, uniquingKeysWith: { first, _ in first })
         return true
