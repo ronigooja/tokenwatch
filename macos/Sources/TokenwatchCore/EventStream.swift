@@ -4,23 +4,44 @@ public enum StreamState: Equatable, Sendable {
     case connecting, connected, waiting(seconds: Int, reason: String)
 }
 
+public enum StreamMessage: Sendable {
+    case event(Event), account(Account), accountDeleted(String), resync, ignored
+}
+
+private struct StreamEnvelope: Decodable {
+    let message: StreamMessage
+    private enum Keys: String, CodingKey { case type, data }
+    private struct Deleted: Decodable { let id: String }
+    private struct Empty: Decodable {}
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: Keys.self)
+        switch try container.decode(String.self, forKey: .type) {
+        case "event": message = .event(try container.decode(Event.self, forKey: .data))
+        case "account": message = .account(try container.decode(Account.self, forKey: .data))
+        case "account_deleted": message = .accountDeleted(try container.decode(Deleted.self, forKey: .data).id)
+        case "resync": _ = try container.decode(Empty.self, forKey: .data); message = .resync
+        default: message = .ignored
+        }
+    }
+}
+
 public struct EventStream: Sendable {
     public let client: APIClient
 
     public init(client: APIClient) { self.client = client }
 
-    public static func decode(_ message: URLSessionWebSocketTask.Message) throws -> Event {
+    public static func decode(_ message: URLSessionWebSocketTask.Message) throws -> StreamMessage {
         let data: Data
         switch message {
         case .string(let text): data = Data(text.utf8)
         case .data(let bytes): data = bytes
         @unknown default: throw APIError.invalidResponse
         }
-        return try APIClient.decoder().decode(Event.self, from: data)
+        return try APIClient.decoder().decode(StreamEnvelope.self, from: data).message
     }
 
     public func run(onState: @escaping @Sendable (StreamState) async -> Void,
-                    onEvent: @escaping @Sendable (Event) async -> Void) async {
+                    onMessage: @escaping @Sendable (StreamMessage) async -> Void) async {
         var delay = 1
         while !Task.isCancelled {
             await onState(.connecting)
@@ -37,7 +58,7 @@ public struct EventStream: Sendable {
                         tasks.addTask {
                             while !Task.isCancelled {
                                 let message = try await socket.receive()
-                                await onEvent(try Self.decode(message))
+                                await onMessage(try Self.decode(message))
                             }
                         }
                         tasks.addTask {

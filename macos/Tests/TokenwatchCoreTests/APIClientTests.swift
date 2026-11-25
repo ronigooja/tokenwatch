@@ -504,8 +504,11 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(request.url?.scheme, "wss")
         XCTAssertEqual(request.url?.path, "/fixture/ws/events")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fixture-token")
-        let event = try EventStream.decode(.string(eventFixture))
-        let binary = try EventStream.decode(.data(Data(eventFixture.utf8)))
+        let frame = "{\"type\":\"event\",\"data\":\(eventFixture)}"
+        guard case .event(let event) = try EventStream.decode(.string(frame)),
+              case .event(let binary) = try EventStream.decode(.data(Data(frame.utf8))) else {
+            return XCTFail("Expected event frames")
+        }
         XCTAssertEqual(event.id, 7)
         XCTAssertEqual(event.data, binary.data)
         XCTAssertEqual(event.usd, 250)
@@ -513,4 +516,40 @@ final class APIClientTests: XCTestCase {
         XCTAssertGreaterThan(event.lastAt, event.createdAt)
         XCTAssertThrowsError(try EventStream.decode(.string("[]")))
     }
+    func testStreamEnvelopeTypes() throws {
+        guard case .account(let account) = try EventStream.decode(.string("{\"type\":\"account\",\"data\":\(accountFixture)}")) else { return XCTFail() }
+        XCTAssertEqual(account.id, "acc-1")
+        guard case .accountDeleted(let id) = try EventStream.decode(.string(#"{"type":"account_deleted","data":{"id":"acc-1"}}"#)) else { return XCTFail() }
+        XCTAssertEqual(id, "acc-1")
+        guard case .resync = try EventStream.decode(.string(#"{"type":"resync","data":{}}"#)) else { return XCTFail() }
+        guard case .ignored = try EventStream.decode(.string(#"{"type":"future","data":{}}"#)) else { return XCTFail() }
+        XCTAssertThrowsError(try EventStream.decode(.string(#"{"data":{}}"#)))
+        XCTAssertThrowsError(try EventStream.decode(.string("not JSON")))
+        XCTAssertThrowsError(try EventStream.decode(.string(#"{"type":5,"data":{}}"#)))
+    }
+
+    @MainActor
+    func testAccountStoreMessagesAndBaselineOrdering() async throws {
+        let original = try APIClient.decoder().decode(Account.self, from: Data(accountFixture.utf8))
+        let changed = try APIClient.decoder().decode(Account.self, from: Data(accountFixture.replacingOccurrences(of: #""status":"active""#, with: #""status":"paused""#).utf8))
+        let inserted = try APIClient.decoder().decode(Account.self, from: Data(accountFixture.replacingOccurrences(of: "acc-1", with: "acc-2").utf8))
+        let store = AccountStore()
+        var loads = 0
+        // Fake stream invokes connected first, then delivers queued frames in order.
+        func fakeStream() async throws {
+            try await store.reload { loads += 1; return [original] }
+            try await store.apply(.account(changed)) { XCTFail(); return [] }
+            try await store.apply(.account(inserted)) { XCTFail(); return [] }
+            try await store.apply(.ignored) { XCTFail(); return [] }
+        }
+        try await fakeStream()
+        XCTAssertEqual(store.accounts.count, 2)
+        XCTAssertEqual(store.accounts.first?.status, .paused)
+        try await store.apply(.accountDeleted("acc-2")) { XCTFail(); return [] }
+        XCTAssertEqual(store.accounts.map(\.id), ["acc-1"])
+        try await store.apply(.resync) { loads += 1; return [inserted] }
+        XCTAssertEqual(loads, 2)
+        XCTAssertEqual(store.accounts.map(\.id), ["acc-2"])
+    }
+
 }
