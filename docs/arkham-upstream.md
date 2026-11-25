@@ -11,6 +11,7 @@ Browser readiness and safe pre-fetch probing are described in [architecture.md](
 - Requests without a login session fail with `transfers.explorer denied at anonymous`.
 - Requests from server IPs outside a page context are blocked by Cloudflare; the page must pass Cloudflare first.
 - A human completes the interactive Cloudflare Turnstile on login.
+- The effect of automatic mouse clicks on the full-page Cloudflare interstitial has not been verified on the real site; see [startup behavior](architecture.md#components).
 - With the fingerprint-chromium Windows persona and canvas spoofing enabled, the Turnstile checkbox on the login page ends in "Verification failed" after a real mouse click. With `--disable-spoofing=canvas`, or with no persona, the click ends in "Success!". Chrome 148 and 150 behave the same. Observed with one blank profile per configuration and one run each, through a residential proxy.
 
 ## Endpoints

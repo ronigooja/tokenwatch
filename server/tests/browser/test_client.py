@@ -101,6 +101,15 @@ class FakeLauncher:
 
 
 class ResponseTests(unittest.TestCase):
+    def test_click_config_validation(self):
+        for key, values in {"cf_click_enabled": [1, "yes"], "cf_click_max_attempts": [0, 4, True],
+                            "cf_click_wait_seconds": [0, float("inf"), True],
+                            "cf_click_initial_wait_seconds": [-1, float("nan"), "1"]}.items():
+            for value in values:
+                with self.subTest(key=key, value=value), self.assertRaisesRegex(ValueError, key):
+                    replace(CONFIG, **{key: value})
+        with self.assertRaisesRegex(ValueError, "fit within cf_wait_seconds"):
+            replace(CONFIG, cf_wait_seconds=31)
     def test_close_timeout_validation(self):
         for value in (0, -1, float('nan'), True):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "close_timeout"):
@@ -162,6 +171,39 @@ class ResponseTests(unittest.TestCase):
 
 
 class ClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_click_episodes(self):
+        class Challenge(FakeSession):
+            def __init__(self, boxes, clear=False, error=False):
+                super().__init__()
+                self.active, self.boxes, self.clear, self.error, self.clicks = True, boxes, clear, error, 0
+            async def title(self):
+                return "Just a moment..." if self.active else "Arkham"
+            async def challenge_info(self):
+                return {"challenge": self.active, "boxes": self.boxes, "viewport": {"width": 800, "height": 600}}
+            async def click_challenge(self, box, attempt):
+                self.clicks += 1
+                if self.error:
+                    raise RuntimeError("fake")
+                if self.clear:
+                    self.active = False
+
+        box = {"x": 10, "y": 10, "width": 300, "height": 65}
+        for boxes, clear, error, expected in [([box], True, False, 1), ([box], False, False, 2),
+                                               ([], False, False, 0), ([box, box], False, False, 0),
+                                               ([dict(box, width=20)], False, False, 0), ([box], False, True, 1)]:
+            with self.subTest(expected=expected, boxes=boxes, error=error):
+                session = Challenge(boxes, clear, error)
+                client, _, _ = self.client(session, cf_wait_seconds=0.09, cf_click_initial_wait_seconds=0.005,
+                                            cf_click_wait_seconds=0.02)
+                if clear:
+                    self.assertEqual(await client.get_json("one", "/user"), [])
+                else:
+                    with self.assertRaises(Blocked) as caught:
+                        await asyncio.wait_for(client.get_json("one", "/user"), 0.3)
+                    self.assertEqual(caught.exception.click_attempts, expected)
+                    self.assertEqual(caught.exception.cause, "challenge_timeout")
+                self.assertEqual(session.clicks, expected)
+
     async def test_hung_close_is_bounded_and_relaunches(self):
         from unittest.mock import patch, AsyncMock
         from tokenwatch.browser.client import _BrowserFailure
@@ -525,7 +567,7 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         session, blocked = FakeSession(), FakeSession()
         session.titles = deque(["Just a moment...", "Arkham"])
         blocked.titles = deque(["Just a moment..."])
-        client, _, _ = self.client(session, blocked, cf_wait_seconds=0.01)
+        client, _, _ = self.client(session, blocked, cf_wait_seconds=0.01, cf_click_enabled=False)
         await client.get_json("one", "/transfers")
         with self.assertRaises(Blocked) as caught:
             await client.get_json("two", "/transfers")
@@ -534,9 +576,12 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(blocked.closed.is_set())
 
     async def test_manual_login_keeps_challenge_page_open_without_fetching(self):
+        from unittest.mock import AsyncMock
         session = FakeSession()
         session.titles = deque(["Just a moment..."])
-        client, _, _ = self.client(session, cf_wait_seconds=0, idle_timeout=0.01)
+        session.challenge_info = AsyncMock()
+        session.click_challenge = AsyncMock()
+        client, _, _ = self.client(session, cf_wait_seconds=0, cf_click_enabled=False, idle_timeout=0.01)
         ready = []
         login = asyncio.create_task(client.manual_login("one", ready=lambda: ready.append(session.opened)))
         with self.assertRaises(TimeoutError):
@@ -545,6 +590,8 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ready, [True])
         self.assertFalse(session.closed.is_set())
         self.assertEqual(session.fetches, [])
+        session.challenge_info.assert_not_awaited()
+        session.click_challenge.assert_not_awaited()
         session.closed.set()
         await asyncio.wait_for(login, 1)
 

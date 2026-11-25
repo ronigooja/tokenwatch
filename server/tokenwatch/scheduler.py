@@ -28,7 +28,7 @@ def pause_details(exc, path, probe):
         result["cause"] = exc.cause
     if source == "job":
         result.update(job_id=job[0], job_kind=job[1])
-    for key in ("title", "page", "status", "screenshot"):
+    for key in ("title", "page", "status", "screenshot", "click_attempts"):
         value = getattr(exc, key, None)
         if value is not None:
             result[key] = value
@@ -36,9 +36,9 @@ def pause_details(exc, path, probe):
 
 
 def log_pause(account_id, details, label="account_paused"):
-    logger.warning("%s account_id=%s cause=%s source=%s endpoint=%s title=%s path=%s job_id=%s job_kind=%s",
+    logger.warning("%s account_id=%s cause=%s source=%s endpoint=%s title=%s path=%s job_id=%s job_kind=%s click_attempts=%s",
                    label, account_id, details.get("cause"), details["source"], details["endpoint"],
-                   details.get("title", ""), details.get("page", ""), details.get("job_id"), details.get("job_kind"))
+                   details.get("title", ""), details.get("page", ""), details.get("job_id"), details.get("job_kind"), details.get("click_attempts"))
 
 
 class AccountUnavailable(Exception):

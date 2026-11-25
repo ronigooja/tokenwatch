@@ -69,7 +69,11 @@ class BrowserConfig:
     close_timeout: float
     max_instances: int = 1
     idle_timeout: float = 60
-    cf_wait_seconds: float = 30
+    cf_wait_seconds: float = 40
+    cf_click_enabled: bool = True
+    cf_click_max_attempts: int = 2
+    cf_click_wait_seconds: float = 12
+    cf_click_initial_wait_seconds: float = 8
     page_settle_seconds: float = 15
     accounts_file: Path | None = None
     managed_ids: frozenset[str] = frozenset()
@@ -91,6 +95,16 @@ class BrowserConfig:
             raise ValueError("idle_timeout must be positive and finite")
         if not math.isfinite(self.cf_wait_seconds) or self.cf_wait_seconds < 0:
             raise ValueError("cf_wait_seconds must be nonnegative and finite")
+        if type(self.cf_click_enabled) is not bool:
+            raise ValueError("cf_click_enabled must be a boolean")
+        if type(self.cf_click_max_attempts) is not int or not 1 <= self.cf_click_max_attempts <= 3:
+            raise ValueError("cf_click_max_attempts must be an integer from 1 to 3")
+        for name in ("cf_click_wait_seconds", "cf_click_initial_wait_seconds"):
+            value = getattr(self, name)
+            if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be positive and finite")
+        if self.cf_click_enabled and self.cf_click_initial_wait_seconds + self.cf_click_max_attempts * self.cf_click_wait_seconds > self.cf_wait_seconds:
+            raise ValueError("cf_click_initial_wait_seconds + cf_click_max_attempts * cf_click_wait_seconds must fit within cf_wait_seconds")
         if not math.isfinite(self.page_settle_seconds) or self.page_settle_seconds < 0:
             raise ValueError("page_settle_seconds must be nonnegative and finite")
         if len({account.id.casefold() for account in self.accounts}) != len(self.accounts):
@@ -121,7 +135,7 @@ class BrowserConfig:
             data["managed_ids"] = frozenset(account["id"] for account in managed)
             return cls(**data)
         except ValueError as error:
-            if any(key in str(error) for key in ("blocked_screenshot_keep", "request_timeout", "close_timeout")):
+            if any(key in str(error) for key in ("blocked_screenshot_keep", "request_timeout", "close_timeout", "cf_click")):
                 raise
         except (OSError, KeyError, TypeError, OverflowError):
             pass

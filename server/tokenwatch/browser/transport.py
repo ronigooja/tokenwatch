@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import random
 import signal
 import sys
 from contextlib import suppress
@@ -100,10 +101,11 @@ class Forwarder(Protocol):
 
 
 class _PlaywrightSession:
-    def __init__(self, driver, context, page):
+    def __init__(self, driver, context, page, rng=None):
         self._driver = driver
         self._context = context
         self._page = page
+        self._rng = rng if rng is not None else random.Random()
         self._page_settle_seconds = 15
         self._closed = asyncio.Event()
         context.on("close", lambda *_: self._closed.set())
@@ -146,6 +148,33 @@ class _PlaywrightSession:
 
     async def title(self) -> str:
         return await self._page.title()
+
+    async def challenge_info(self) -> dict:
+        title = (await self._page.title()).lower()
+        boxes = []
+        for frame in self._page.frames:
+            if urlsplit(frame.url).hostname != "challenges.cloudflare.com":
+                continue
+            element = await frame.frame_element()
+            box = await element.bounding_box()
+            if box and await element.is_visible():
+                boxes.append(box)
+        markers = await self._page.locator('#challenge-stage, [id*="cf_chl"], [class*="cf_chl"]').count()
+        failure = await self._page.get_by_text("verification failed", exact=False).count()
+        viewport = await self._page.evaluate("() => ({width: innerWidth, height: innerHeight})")
+        return {"challenge": "just a moment" in title or bool(boxes) or bool(markers),
+                "boxes": boxes, "viewport": viewport, "failure": bool(failure)}
+
+    async def click_challenge(self, box, attempt) -> None:
+        viewport = await self._page.evaluate("() => ({width: innerWidth, height: innerHeight})")
+        x = min(box["x"] + box["width"] - 1, viewport["width"] - 1, box["x"] + self._rng.uniform(26, 28))
+        y = min(box["y"] + box["height"] - 1, viewport["height"] - 1, box["y"] + self._rng.uniform(25, 27))
+        await self._page.mouse.move(x, y, steps=self._rng.randint(8, 12))
+        await self._page.mouse.down()
+        try:
+            await asyncio.sleep(self._rng.uniform(0.1, 0.2))
+        finally:
+            await self._page.mouse.up()
 
     async def screenshot(self, path: str) -> None:
         await self._page.screenshot(path=path, full_page=False, timeout=5000)

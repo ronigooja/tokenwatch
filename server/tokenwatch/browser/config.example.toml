@@ -9,7 +9,11 @@ idle_timeout = 60
 request_timeout = 120
 # Total time allowed for browser and proxy close before forced cleanup.
 close_timeout = 5
-cf_wait_seconds = 30
+cf_wait_seconds = 40
+cf_click_enabled = true
+cf_click_max_attempts = 2
+cf_click_wait_seconds = 12
+cf_click_initial_wait_seconds = 8
 # Seconds per load-state wait; 0 disables settling and the recovery wait.
 page_settle_seconds = 15
 # Optional private screenshots; set both in browser.local.toml, outside the repository.

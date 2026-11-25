@@ -41,6 +41,18 @@ class PersonaTests(unittest.TestCase):
 
 
 class BrowserDomTests(unittest.IsolatedAsyncioTestCase):
+    async def test_challenge_mouse_click_bounds(self):
+        import random
+        page = MagicMock(evaluate=AsyncMock(return_value={"width": 800, "height": 600}))
+        page.mouse.move, page.mouse.down, page.mouse.up = AsyncMock(), AsyncMock(), AsyncMock()
+        session = _PlaywrightSession(MagicMock(), MagicMock(), page, rng=random.Random(1))
+        with patch("tokenwatch.browser.transport.asyncio.sleep", new_callable=AsyncMock) as sleep:
+            await session.click_challenge({"x": 10, "y": 20, "width": 300, "height": 60}, 1)
+        x, y = page.mouse.move.await_args.args
+        self.assertTrue(10 <= x < 310 and 20 <= y < 80 and x < 800 and y < 600)
+        self.assertTrue(0.1 <= sleep.await_args.args[0] <= 0.2)
+        page.mouse.down.assert_awaited_once()
+        page.mouse.up.assert_awaited_once()
     async def test_probe_recovery_never_repeats_fetch(self):
         page = MagicMock()
         page.wait_for_load_state = AsyncMock()
