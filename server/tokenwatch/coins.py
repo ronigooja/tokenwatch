@@ -160,7 +160,7 @@ def candidates(snapshot):
                                                        "withdraw_enabled": None}])
 
 
-def classify(candidate, snapshot, futures_symbols, policies):
+def classify(candidate, snapshot, futures_symbols, policies, mapped=False):
     metadata = snapshot["assets"].get(candidate.symbol)
     networks = snapshot["networks"].get(candidate.symbol)
     # A spot asset's exchange labels are not proof of the identity of another contract with the same symbol.
@@ -174,7 +174,7 @@ def classify(candidate, snapshot, futures_symbols, policies):
              or kind == "tag" and metadata and metadata["tags"] is not None and value in metadata["tags"])}
         if reasons:
             return "excluded", "; ".join(sorted(reasons))
-    if candidate.feed == "spot" and (not metadata or metadata["tags"] is None or not any(
+    if candidate.feed == "spot" and (not metadata or metadata["tags"] is None or not mapped and not any(
         row["chain"] and row.get("address_known", True) and (
             row["address"] or row["chain"] == candidate.symbol and (
                 row["deposit_enabled"] or row["withdraw_enabled"])) for row in candidate.deployments
@@ -327,6 +327,7 @@ class CoinCatalog:
         mappings = {row.base: row.symbol for row in db.scalars(select(FuturesMapping))}
         futures = {base if base in symbols else mappings.get(base) for base in snapshot["futures"]}
         policies = [(row.kind, row.value, row.reason) for row in db.scalars(select(CatalogExclusion))]
+        mapped_ids = set(db.scalars(select(CoinMapping.coin_id)))
         existing = {row.id: row for row in db.scalars(select(Coin))}
         for candidate in rows:
             coin = existing.pop(candidate.id, None)
@@ -338,7 +339,7 @@ class CoinCatalog:
                 coin.automatic_chains = []
                 coin.searched_deployments = []
             coin.symbol, coin.sources, coin.deployments = candidate.symbol, [candidate.feed], candidate.deployments
-            coin.catalog_status, coin.catalog_reason = classify(candidate, snapshot, futures, policies)
+            coin.catalog_status, coin.catalog_reason = classify(candidate, snapshot, futures, policies, candidate.id in mapped_ids)
             sync_coin(db, coin)
         for coin in existing.values():
             coin.catalog_status, coin.catalog_reason = "unknown_onchain", "not in the validated Binance catalog"

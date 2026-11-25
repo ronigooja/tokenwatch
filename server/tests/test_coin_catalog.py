@@ -139,6 +139,42 @@ def mock_feeds(feeds, calls):
     return httpx.MockTransport(fetch)
 
 
+def test_manual_mapping_reprojects_network_evidence(core, settings):
+    store, fake, clock, gate, _ = core
+    feeds, calls = catalog_feeds(), []
+    feeds[FUTURES_URL]["symbols"].append(future("UNKNOWN"))
+    catalog = CoinCatalog(store, gate, mock_feeds(feeds, calls), clock)
+    asyncio.run(catalog.refresh_snapshot())
+    coin_id = "unknown:spot:UNKNOWN"
+    app = create_app(settings, run_scheduler=False)
+    with TestClient(app) as client:
+        client.headers.update({"Authorization": "Bearer test-token"})
+        def status():
+            return client.get(f"/coins/{coin_id}").json()["status"]
+
+        assert status() == "unknown_onchain"
+        assert client.get("/coins/native:BTC").json()["status"] == "needs_manual_mapping"
+        before = len(calls)
+        assert client.put(f"/coins/{coin_id}/mapping", json={"pricing_id": "unknown"}).status_code == 200
+        assert status() == "pending_support"
+        assert len(calls) == before and not fake.calls
+        asyncio.run(catalog.refresh_snapshot())
+        assert status() == "pending_support"
+        with store.begin() as db:
+            db.add(CatalogExclusion(kind="tag", value="blocked", reason="blocked"))
+        feeds[ASSET_URL]["data"][-2]["tags"] = ["blocked"]
+        asyncio.run(catalog.refresh_snapshot())
+        assert status() == "excluded"
+        feeds[ASSET_URL]["data"][-2]["tags"] = []
+        feeds[FUTURES_URL]["symbols"] = [row for row in feeds[FUTURES_URL]["symbols"] if row["baseAsset"] != "UNKNOWN"]
+        asyncio.run(catalog.refresh_snapshot())
+        assert status() == "no_futures"
+        feeds[FUTURES_URL]["symbols"].append(future("UNKNOWN"))
+        asyncio.run(catalog.refresh_snapshot())
+        assert client.delete(f"/coins/{coin_id}/mapping").status_code == 204
+        assert status() == "unknown_onchain"
+
+
 def test_optional_network_fields_and_empty_tags():
     from tokenwatch.coins import candidates, classify, parse_feeds
     feeds = catalog_feeds()

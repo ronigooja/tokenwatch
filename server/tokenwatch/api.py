@@ -524,6 +524,8 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
         coin = find(db, Coin, coin_id)
         db.merge(CoinMapping(coin_id=coin_id, pricing_id=body.pricing_id))
         db.flush()
+        cache = db.get(CatalogCache, "binance")
+        CoinCatalog.reclassify(db, cache.payload if cache else None)
         sync_coin(db, coin)
         return body
 
@@ -532,6 +534,8 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
         coin = find(db, Coin, coin_id)
         db.delete(find(db, CoinMapping, coin_id))
         db.flush()
+        cache = db.get(CatalogCache, "binance")
+        CoinCatalog.reclassify(db, cache.payload if cache else None)
         sync_coin(db, coin)
         return Response(status_code=204)
 
