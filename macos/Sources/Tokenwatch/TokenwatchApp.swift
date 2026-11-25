@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import TokenwatchCore
 import UserNotifications
@@ -67,6 +68,8 @@ final class AppModel: ObservableObject {
     private var refresh: Task<Void, Never>?
     private var isStarted = false
     private var receivedThrough: Int?
+    private(set) var coinNames: CoinNames?
+    private var coinNamesObserver: AnyCancellable?
 
     var unreadLabel: String { unreadIDs.count > 100 ? "100+" : String(unreadIDs.count) }
     var status: String {
@@ -118,6 +121,10 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(newValue, forKey: "notifications")
     }
 
+    func coinLabel(_ id: String) -> String { coinNames?.label(id) ?? id }
+
+    func resolveCoins(_ ids: [String?]) async { await coinNames?.resolve(ids) }
+
     func mark(_ event: Event) async throws {
         guard let client else { return }
         let generation = revision
@@ -149,8 +156,13 @@ final class AppModel: ObservableObject {
         eventFocus = nil
         problem = nil
         streamState = nil
+        coinNamesObserver = nil
+        coinNames = nil
         guard let client else { return }
         let generation = revision
+        let names = CoinNames(source: client)
+        coinNames = names
+        coinNamesObserver = names.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         streamState = .connecting
         refreshRecent(using: client, generation: generation)
         stream = Task { [weak self] in
@@ -167,6 +179,7 @@ final class AppModel: ObservableObject {
         streamState = state
         if state == .connected {
             refreshRecent(using: client, generation: generation)
+            await coinNames?.load()
             do { try await accountStore.reload { try await client.accounts() } }
             catch { if revision == generation { problem = error.localizedDescription } }
         }
@@ -194,6 +207,7 @@ final class AppModel: ObservableObject {
                 }
                 self.unreadIDs = unreadByID
                 self.problem = nil
+                await self.resolveCoins(self.recent.map(\.coinId))
             } catch {
                 guard !Task.isCancelled, let self, self.revision == generation else { return }
                 self.problem = error.localizedDescription
@@ -203,7 +217,11 @@ final class AppModel: ObservableObject {
 
     private func receiveMessage(_ message: StreamMessage, client: APIClient, generation: UUID) async {
         guard revision == generation else { return }
-        if case .event(let event) = message { receive(event, generation: generation); return }
+        if case .event(let event) = message {
+            await resolveCoins([event.coinId])
+            receive(event, generation: generation)
+            return
+        }
         do { try await accountStore.apply(message) { try await client.accounts() } }
         catch { if revision == generation { problem = error.localizedDescription } }
     }
@@ -218,7 +236,7 @@ final class AppModel: ObservableObject {
         recent = merged(recent, [current])
         if isNew, current.readAt == nil, notifications {
             let content = UNMutableNotificationContent()
-            content.title = current.coinId.map { "\($0) · \(current.kind)" } ?? current.kind
+            content.title = current.coinId.map { "\(coinLabel($0)) · \(current.kind)" } ?? current.kind
             content.body = "\(current.level.rawValue.capitalized) event"
             content.sound = .default
             UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "\(generation)-\(event.id)",
@@ -304,7 +322,7 @@ private struct MenuView: View {
                     model.eventFocus = AppModel.EventFocus(id: event.id)
                     showMain()
                 } label: {
-                    Label("\(event.coinId ?? "—") · \(event.kind)",
+                    Label("\(event.coinId.map { model.coinLabel($0) } ?? "—") · \(event.kind)",
                           systemImage: event.readAt == nil ? "circle.fill" : "circle")
                         .lineLimit(1)
                 }.buttonStyle(.plain)

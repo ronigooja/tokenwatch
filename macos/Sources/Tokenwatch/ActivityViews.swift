@@ -12,7 +12,6 @@ struct EventsView: View {
     @State private var minUSD = ""
     @State private var maxUSD = ""
     @State private var rows: [Event] = []
-    @State private var coins: [Coin] = []
     @State private var selection: Int?
     @State private var action = ActionState()
 
@@ -52,7 +51,7 @@ struct EventsView: View {
             HSplitView {
                 Table(events, selection: $selection) {
                     TableColumn("Time") { (event: Event) in Text(event.createdAt, format: .dateTime) }
-                    TableColumn("Coin") { (event: Event) in Text(event.coinId.map { coinLabel($0, coins) } ?? "—") }
+                    TableColumn("Coin") { (event: Event) in Text(event.coinId.map { model.coinLabel($0) } ?? "—") }
                     TableColumn("Event") { (event: Event) in Text(event.kind) }
                     TableColumn("Level") { (event: Event) in
                         Text(event.level.rawValue).foregroundStyle(event.level == .important ? Color.red : Color.primary)
@@ -74,7 +73,6 @@ struct EventsView: View {
         }
         .navigationTitle("Events")
         .task { await action.load { try await load(applied) } }
-        .task { coins = (try? await client.coins()) ?? [] }
         .onChange(of: model.streamState) { _, state in
             if state == .connected, applied.page.offset == 0 { action.run { try await load(applied) } }
         }
@@ -107,6 +105,7 @@ struct EventsView: View {
     private func load(_ filter: EventFilter) async throws {
         rows = try await client.events(filter)
         applied = filter
+        await model.resolveCoins(rows.map(\.coinId))
     }
 
     private func details(_ event: Event) -> some View {
@@ -114,7 +113,7 @@ struct EventsView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text(event.kind).font(.headline)
                 LabeledContent("Event ID", value: String(event.id))
-                LabeledContent("Coin", value: event.coinId.map { coinLabel($0, coins) } ?? "—")
+                LabeledContent("Coin", value: event.coinId.map { model.coinLabel($0) } ?? "—")
                 LabeledContent("Rule", value: event.ruleId.map { String($0) } ?? "—")
                 LabeledContent("Level", value: event.level.rawValue)
                 LabeledContent("Last seen", value: event.lastAt.formatted())
