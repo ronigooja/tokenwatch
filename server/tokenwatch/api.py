@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import secrets
 import unicodedata
 from collections import defaultdict
@@ -19,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from . import schemas as s
 from .coins import CoinCatalog, SEARCH_PATH, deployment_keys, search_candidates, sync_coin
+from .hub import Hub
 from .collectors import Collectors, snapshot_diff
 from .config import load_settings
 from .login_session import LoginSessions
@@ -31,6 +33,7 @@ from .upstream import UpstreamError
 from .browser.config import AccountConfig, proxy_parts
 from .browser.timezone import detect_timezone
 
+logger = logging.getLogger(__name__)
 
 Page = Annotated[int, Query(ge=1, le=500)]
 Offset = Annotated[int, Query(ge=0)]
@@ -174,12 +177,14 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
         app.state.timezone_detector = timezone_detector
         app.state.collectors = None
         app.state.gate = None
+        app.state.hub = Hub(asyncio.get_running_loop())
         task = None
         scheduler = None
         try:
             if client is not None:
                 gate = RequestGate(store, client, config)
                 app.state.gate = gate
+                gate.notify_account = notify_account
                 catalog = CoinCatalog(store, gate, transport=catalog_transport, settings=config)
                 collectors = Collectors(store, gate, config, catalog=catalog)
                 app.state.collectors = collectors
@@ -189,6 +194,10 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
                     }, gate=gate)
                     task = asyncio.create_task(scheduler.run())
             app.state.logins = LoginSessions(store, client, app.state.gate, config)
+            app.state.logins.notify_account = notify_account
+            with store() as db:
+                for row in db.scalars(select(Account)):
+                    app.state.hub.account(account_out(row, client), baseline=True)
             yield
         finally:
             if scheduler is None:
@@ -394,6 +403,15 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
                 "email": config.email if managed else None, "password": config.password if managed else None,
                 "proxy_url": config.proxy_url if managed else None}
 
+    def notify_account(account_id):
+        try:
+            with app.state.store() as db:
+                row = db.get(Account, account_id)
+                if row:
+                    app.state.hub.account(account_out(row, app.state.upstream))
+        except Exception:
+            logger.exception("WebSocket account notification failed")
+
     async def timezone_for(account):
         try:
             zone = await app.state.timezone_detector(account)
@@ -441,7 +459,12 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
                     raise HTTPException(409, "Account conflicts with existing data") from None
                 except (OSError, UpstreamError):
                     raise HTTPException(503, "Browser pool unavailable") from None
-                return account_out(row, client)
+                result = account_out(row, client)
+            try:
+                request.app.state.hub.account(result)
+            except Exception:
+                logger.exception("WebSocket account notification failed")
+            return result
 
     @app.put("/accounts/{account_id}", response_model=s.AccountOut, dependencies=auth, operation_id="put_accounts")
     async def put_account(account_id: s.Ref, body: s.AccountInput, request: Request):
@@ -475,7 +498,12 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
                     for key, value in status_values.items():
                         setattr(row, key, value)
                 db.flush()
-                return account_out(row, client)
+                result = account_out(row, client)
+            try:
+                request.app.state.hub.account(result)
+            except Exception:
+                logger.exception("WebSocket account notification failed")
+            return result
 
     @app.delete("/accounts/{account_id}", status_code=204, dependencies=auth, operation_id="delete_accounts")
     async def delete_account(account_id: s.Ref, request: Request):
@@ -493,6 +521,10 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
                     raise HTTPException(503, "Browser pool unavailable") from None
                 db.delete(row)
                 db.flush()
+            try:
+                request.app.state.hub.deleted(account_id)
+            except Exception:
+                logger.exception("WebSocket account notification failed")
         return Response(status_code=204)
 
     @app.get("/accounts/{account_id}/session", response_model=s.AccountSession, dependencies=auth)
@@ -649,20 +681,34 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
         store = app.state.store
         with store() as db:
             cursor = db.scalar(select(func.max(Event.id))) or 0
-        await websocket.accept()
-        while True:
-            with store() as db:
-                batch = db.scalars(select(Event).where(Event.id > cursor, Event.push).order_by(Event.id).limit(100)).all()
-            for row in batch:
-                await websocket.send_json(s.EventOut.model_validate(row).model_dump(mode="json"))
-                with store.begin() as db:
-                    db.add(PushLog(event_id=row.id))
-                cursor = row.id
-            try:
-                message = await asyncio.wait_for(websocket.receive(), timeout=1)
-            except TimeoutError:
-                continue
-            if message["type"] == "websocket.disconnect":
-                break
+        queue = app.state.hub.subscribe()
+        try:
+            await websocket.accept()
+        except BaseException:
+            app.state.hub.unsubscribe(queue)
+            raise
+        receive = asyncio.create_task(websocket.receive())
+        queued = asyncio.create_task(queue.get())
+        try:
+            while True:
+                with store() as db:
+                    batch = db.scalars(select(Event).where(Event.id > cursor, Event.push).order_by(Event.id).limit(100)).all()
+                for row in batch:
+                    await websocket.send_json({"type": "event", "data": s.EventOut.model_validate(row).model_dump(mode="json")})
+                    with store.begin() as db:
+                        db.add(PushLog(event_id=row.id))
+                    cursor = row.id
+                done, _ = await asyncio.wait((receive, queued), timeout=1, return_when=asyncio.FIRST_COMPLETED)
+                if receive in done:
+                    if receive.result()["type"] == "websocket.disconnect":
+                        break
+                    receive = asyncio.create_task(websocket.receive())
+                if queued in done:
+                    await websocket.send_json(queued.result())
+                    queued = asyncio.create_task(queue.get())
+        finally:
+            receive.cancel()
+            queued.cancel()
+            app.state.hub.unsubscribe(queue)
 
     return app

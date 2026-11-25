@@ -5,6 +5,7 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
@@ -459,7 +460,7 @@ def test_daily_truncation_exclusion_and_balance_rule(core):
 @pytest.mark.parametrize("value", [100000, 100000.0, 100000.5, -1, True])
 def test_snapshot_and_job_balance_min_validation(settings, value):
     fake = FakeUpstream()
-    app = create_app(settings, fake, run_scheduler=False)
+    app = create_app(settings, fake, catalog_transport=httpx.MockTransport(lambda request: httpx.Response(500)), run_scheduler=False)
     with TestClient(app, headers={"Authorization": "Bearer test-token"}) as client:
         with app.state.store.begin() as db:
             db.add(Account(id="a", proxy_ref="p"))
@@ -538,7 +539,7 @@ def test_transfer_rules_cooldown_merge_and_filters(core):
 def test_api_crud_snapshots_filters_and_socket(settings):
     fake = FakeUpstream()
     fake.responses.extend([{"id": "user"}, [balance("a"), balance("b")], [balance("b", 2), balance("c")]])
-    app = create_app(settings, fake, run_scheduler=False)
+    app = create_app(settings, fake, catalog_transport=httpx.MockTransport(lambda request: httpx.Response(500)), run_scheduler=False)
     headers = {"Authorization": "Bearer test-token"}
     with TestClient(app) as client:
         assert client.get("/transfers").status_code == 401
@@ -575,6 +576,8 @@ def test_api_crud_snapshots_filters_and_socket(settings):
         with client.websocket_connect("/ws/events", headers=headers) as ws:
             asyncio.run(app.state.collectors.transfers(SimpleNamespace(coin_id="ABC", account_id="a", interval_seconds=60)))
             event = ws.receive_json()
+            assert event["type"] == "event"
+            event = event["data"]
             assert event["data"]["id"] == "selected"
         params = {"coin_id": "ABC", "min_usd": 300, "max_usd": 600, "chain": "ethereum", "address": "sender",
                   "entity": "e", "direction": "inbound", "txhash": "tx-selected", "start": "2026-01-09T22:00:00-02:00",

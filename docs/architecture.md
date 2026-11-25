@@ -23,6 +23,12 @@ Python server on a Linux host; SwiftUI macOS client. Upstream data is documented
 
 Scheduler → browser pool → collectors → store → rule engine → events → API/WebSocket → client.
 
+## WebSocket messages
+
+`/ws/events` uses the same bearer authentication as REST. Each JSON frame is `{"type":"…","data":{…}}`; clients ignore unknown types. `event` contains an `EventOut` selected by `Event.push`, in event ID order, with the existing push log. `account` contains the full `GET /accounts` object, including managed credentials; authenticated REST already exposes those credentials. It is sent on creation and changes to status, pause reason, failures, cached session status, or managed configuration, but not on changes solely to request timing or cache timestamp. `account_deleted` contains `{"id":"…"}`. `resync` contains `{}` and indicates a connection lost messages when its bounded queue overflowed.
+
+Each account frame carries request timing and `session_checked_at` as of publication, even though changes to these values alone do not trigger a frame. The server sends no account baseline on connect. Clients open the socket first, load `GET /accounts`, then apply account frames as full replacements and deletion frames by ID. On `resync`, reload the baseline via REST.
+
 ## Coin list
 
 The `coin_catalog` job refreshes five public Binance feeds: spot `exchangeInfo` (trading pairs with spot trading allowed), Alpha token list (all entries), `getNetworkCoinAll` (networks and legal-money flag), `get-all-asset` (asset tags and legal-money flag), and USD-M `exchangeInfo` (futures). Requests bypass the Arkham gate and use the optional dedicated proxy described in [deployment](deployment.md). Each feed has a timeout and up to three attempts with 30- and 60-second delays; HTTP 403 and 451 stop immediately without retry. A failed request or invalid shape leaves the last validated snapshot intact; `GET /coin-catalog` reports `unknown` and the last successful refresh. An address is usable even when deposit and withdrawal are disabled; an addressless network is usable only when named for the asset and at least one flag is enabled.

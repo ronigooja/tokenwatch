@@ -70,9 +70,13 @@ class RequestGate:
         self.status_locks = defaultdict(asyncio.Lock)
         self.closing = False
         self.in_flight = set()
+        self.notify_account = lambda account_id: None
 
     def remember_status(self, account_id, status):
+        old = self.status_cache.get(account_id, (None, None))[1]
         self.status_cache[account_id] = (self.clock(), status)
+        if old != status:
+            self.notify_account(account_id)
 
     def distribution_wait(self):
         with self.store() as db:
@@ -103,6 +107,7 @@ class RequestGate:
             if isinstance(payload, dict) and payload:
                 return "logged_in"
             self.status_cache.pop(account_id, None)
+            self.notify_account(account_id)
             return "unknown"
 
     async def get(self, account_id, path, params, decode=lambda value: value, probe=False, single=False):
@@ -176,8 +181,6 @@ class RequestGate:
                 if self.closing or getattr(self.upstream, "_closed", False):
                     raise asyncio.CancelledError() from exc
                 exc.endpoint = safe_endpoint(path)
-                if isinstance(exc, AuthRequired):
-                    self.remember_status(account_id, "logged_out")
                 if probe and not isinstance(exc, PAUSING_ERRORS):
                     raise
                 with self.store.begin() as db:
@@ -195,12 +198,16 @@ class RequestGate:
                             log_pause(account_id, details)
                             alert(db, f"upstream:{uuid4()}", "account_paused",
                                   {"account_id": account_id, "reason": account.pause_reason, **details})
+                if isinstance(exc, AuthRequired):
+                    self.remember_status(account_id, "logged_out")
+                self.notify_account(account_id)
                 raise
             if payload is not UNSUPPORTED_TOKEN:
                 with self.store.begin() as db:
                     if account := db.get(Account, account_id):
                         account.failures = 0
             self.remember_status(account_id, "logged_in")
+            self.notify_account(account_id)
             return result
 
 

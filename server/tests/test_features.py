@@ -129,7 +129,7 @@ def test_api_session_reads_share_cache(settings):
     from test_core import FakeUpstream
     fake = FakeUpstream()
     fake.responses.append({"id": "user"})
-    app = create_app(settings, fake, run_scheduler=False)
+    app = create_app(settings, fake, catalog_transport=httpx.MockTransport(lambda request: httpx.Response(500)), run_scheduler=False)
     with TestClient(app) as client:
         client.headers.update({"Authorization": "Bearer test-token"})
         with app.state.store.begin() as db:
@@ -148,7 +148,7 @@ def test_account_responses_use_last_cached_status_without_probes(settings):
                         password="secret", proxy_url="secret-proxy"), account_id == "managed"
     )
     fake.responses.extend([{"id": "user"}, AuthRequired(), BadResponse()])
-    app = create_app(settings, fake, run_scheduler=False)
+    app = create_app(settings, fake, catalog_transport=httpx.MockTransport(lambda request: httpx.Response(500)), run_scheduler=False)
     with TestClient(app, headers={"Authorization": "Bearer test-token"}) as client:
         app.state.gate.clock = clock
         app.state.gate.sleep = clock.sleep

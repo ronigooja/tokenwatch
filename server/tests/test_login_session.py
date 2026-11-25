@@ -5,6 +5,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
+import httpx
 import pytest
 import websockets
 from fastapi.testclient import TestClient
@@ -60,7 +61,7 @@ def setup(tmp_path):
                         novnc_url=f"http://127.0.0.1:{server.server_port}", vnc_password="secret password",
                         request_interval=0.001, request_jitter=0, login_timeout=0.3)
     fake = Upstream()
-    app = create_app(settings, fake, run_scheduler=False)
+    app = create_app(settings, fake, catalog_transport=httpx.MockTransport(lambda request: httpx.Response(500)), run_scheduler=False)
     with TestClient(app, headers={"Authorization": "Bearer token"}) as client:
         with app.state.store.begin() as db:
             db.add_all([Account(id="a", proxy_ref="p"), Account(id="b", proxy_ref="q")])

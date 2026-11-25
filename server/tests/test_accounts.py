@@ -1,7 +1,11 @@
 import os
+import asyncio
+import threading
 
 import pytest
+import httpx
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from tokenwatch.api import create_app
 from tokenwatch.browser.client import BrowserUpstreamClient
@@ -23,13 +27,91 @@ def accounts(tmp_path):
     async def detector(account):
         return "America/New_York"
     app = create_app(Settings(database=tmp_path / "db", bearer_token="token", signing_key="key"), pool,
-                     run_scheduler=False, timezone_detector=detector)
+                     run_scheduler=False, timezone_detector=detector,
+                     catalog_transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})))
     with TestClient(app, headers={"Authorization": "Bearer token"}) as client:
         yield client, pool, source, app
 
 
 def body(email=A, **changes):
     return {"email": email, "password": PASSWORD, "proxy_url": PROXY, **changes}
+
+
+def test_account_socket(accounts):
+    client, _, _, app = accounts
+    headers = {"Authorization": "Bearer token"}
+    with client.websocket_connect("/ws/events", headers=headers) as first, client.websocket_connect("/ws/events", headers=headers) as second:
+        created = client.post("/accounts", json=body()).json()
+        assert first.receive_json() == {"type": "account", "data": created}
+        assert second.receive_json() == {"type": "account", "data": created}
+        paused = client.put(f"/accounts/{A}", json={"status": "paused"}).json()
+        assert first.receive_json() == {"type": "account", "data": paused}
+        assert second.receive_json() == {"type": "account", "data": paused}
+        client.put(f"/accounts/{A}", json={"status": "paused"})
+        active = client.put(f"/accounts/{A}", json={"status": "active"}).json()
+        assert first.receive_json() == {"type": "account", "data": active}
+        assert second.receive_json() == {"type": "account", "data": active}
+        assert client.delete(f"/accounts/{A}").status_code == 204
+        assert first.receive_json() == {"type": "account_deleted", "data": {"id": A}}
+        assert second.receive_json() == {"type": "account_deleted", "data": {"id": A}}
+
+
+def test_hub_failure_is_swallowed(accounts, monkeypatch):
+    client, _, _, app = accounts
+    def fail(*args):
+        raise RuntimeError("hub failed")
+    monkeypatch.setattr(app.state.hub, "account", fail)
+    assert client.post("/accounts", json=body()).status_code == 201
+
+
+def test_socket_auth_thread_and_disconnect(accounts):
+    client, _, _, app = accounts
+    with pytest.raises(WebSocketDisconnect) as error:
+        with client.websocket_connect("/ws/events", headers={"Authorization": "Bearer wrong"}):
+            pass
+    assert error.value.code == 1008
+    with client.websocket_connect("/ws/events", headers={"Authorization": "Bearer token"}) as socket:
+        assert len(app.state.hub.subscribers) == 1
+        thread = threading.Thread(target=app.state.hub.publish, args=("future", {"value": 1}))
+        thread.start()
+        thread.join()
+        assert socket.receive_json() == {"type": "future", "data": {"value": 1}}
+    client.portal.call(asyncio.sleep, 0.01)
+    assert not app.state.hub.subscribers
+
+
+def test_socket_overflow_and_send_failure(accounts, monkeypatch):
+    from starlette.websockets import WebSocket
+
+    client, _, _, app = accounts
+    app.state.hub.capacity = 2
+    original = WebSocket.send_json
+    entered, release = threading.Event(), threading.Event()
+    blocked = set()
+    async def slow_send(self, data, *args, **kwargs):
+        if data["type"] == "block" and not blocked:
+            blocked.add(id(self))
+            entered.set()
+            await asyncio.to_thread(release.wait)
+        if data["type"] == "fail" and id(self) in blocked:
+            raise RuntimeError("fake send failure")
+        return await original(self, data, *args, **kwargs)
+    monkeypatch.setattr(WebSocket, "send_json", slow_send)
+    headers = {"Authorization": "Bearer token"}
+    with pytest.raises(RuntimeError, match="fake send failure"), client.websocket_connect("/ws/events", headers=headers) as slow:
+        app.state.hub.publish("block", {})
+        assert entered.wait(2)
+        with client.websocket_connect("/ws/events", headers=headers) as fast:
+            for number in range(4):
+                app.state.hub.publish("item", {"n": number})
+                assert fast.receive_json() == {"type": "item", "data": {"n": number}}
+            release.set()
+            assert slow.receive_json() == {"type": "block", "data": {}}
+            assert slow.receive_json() == {"type": "resync", "data": {}}
+            app.state.hub.publish("fail", {})
+            assert fast.receive_json() == {"type": "fail", "data": {}}
+            client.portal.call(asyncio.sleep, 0.05)
+            assert len(app.state.hub.subscribers) == 1
 
 
 def test_create_reload_and_delete(accounts):

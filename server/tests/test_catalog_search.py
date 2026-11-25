@@ -9,7 +9,7 @@ from sqlalchemy import select
 from tokenwatch.api import create_app
 from tokenwatch.config import Settings
 from tokenwatch.db import Account, Coin, CoinMapping
-from tokenwatch.upstream import Blocked, RateLimited, RequestRejected
+from tokenwatch.upstream import BadResponse, Blocked, RateLimited, RequestRejected
 
 
 class FakeUpstream:
@@ -29,7 +29,7 @@ class FakeUpstream:
 @pytest.fixture
 def setup(tmp_path):
     settings = Settings(database=tmp_path / "db", bearer_token="token", signing_key="key",
-                        request_interval=0.001, request_jitter=0)
+                        request_interval=0.001, request_jitter=0, backoff_initial=0.001)
     fake = FakeUpstream()
     transport = httpx.MockTransport(lambda request: httpx.Response(500))
     with TestClient(create_app(settings, fake, catalog_transport=transport, run_scheduler=False)) as client:
@@ -47,6 +47,43 @@ def rows(client):
         return ([(c.id, c.status, c.pricing_id, c.match_failures, c.last_match_attempt)
                  for c in db.scalars(select(Coin))],
                 [(m.coin_id, m.pricing_id) for m in db.scalars(select(CoinMapping))])
+
+
+def test_socket_gate_changes_and_coalescing(setup):
+    client, fake = setup
+    app = client.app
+    with app.state.store.begin() as db:
+        db.get(Account, "b").status = "paused"
+    app.state.gate.notify_account("a")
+    with client.websocket_connect("/ws/events", headers={"Authorization": "Bearer token"}) as socket:
+        fake.responses.append(BadResponse())
+        client.get("/coin-catalog/search", params={"query": "BTC"})
+        failure = socket.receive_json()
+        assert failure["type"] == "account" and failure["data"]["failures"] == 1
+        fake.responses.append({})
+        client.get("/coin-catalog/search", params={"query": "BTC"})
+        success = socket.receive_json()
+        assert success["data"]["failures"] == 0
+        assert success["data"]["session_status"] == "logged_in"
+        fake.responses.append({})
+        client.get("/coin-catalog/search", params={"query": "BTC"})
+        app.state.gate.remember_status("a", "logged_in")
+        app.state.gate.remember_status("a", "logged_out")
+        changed = socket.receive_json()
+        assert changed["data"]["session_status"] == "logged_out"
+
+
+def test_socket_pausing_failure(setup):
+    client, fake = setup
+    with client.app.state.store.begin() as db:
+        db.get(Account, "b").status = "paused"
+    client.app.state.gate.notify_account("a")
+    with client.websocket_connect("/ws/events", headers={"Authorization": "Bearer token"}) as socket:
+        fake.responses.append(RequestRejected("fake", status=403))
+        assert client.get("/coin-catalog/search", params={"query": "BTC"}).status_code == 502
+        frame = socket.receive_json()
+        assert (frame["type"], frame["data"]["failures"], frame["data"]["status"],
+                frame["data"]["pause_reason"]) == ("account", 1, "paused", "RequestRejected")
 
 
 def test_search_success_and_empty(setup):

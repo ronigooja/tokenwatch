@@ -28,6 +28,7 @@ class LoginSessions:
         self.current = None
         self.history = {}
         self.lock = asyncio.Lock()
+        self.notify_account = lambda account_id: None
 
     def valid(self, ticket):
         session = self.current
@@ -56,6 +57,7 @@ class LoginSessions:
                     raise HTTPException(503, "Login unavailable")
                 session = Login(account_id, secrets.token_urlsafe(32), (account.status, account.pause_reason), page)
                 account.status, account.pause_reason = "paused", "login"
+            self.notify_account(account_id)
             self.current = session
             self.history.pop(account_id, None)
             await asyncio.to_thread(clear_caps_lock)
@@ -78,6 +80,7 @@ class LoginSessions:
                     account = db.get(Account, session.account_id)
                     if account and account.pause_reason == "login":
                         account.status, account.pause_reason = session.previous
+                self.notify_account(session.account_id)
             else:
                 session.state = "closed"
         else:
@@ -102,6 +105,7 @@ class LoginSessions:
                 account = db.get(Account, session.account_id)
                 if account and account.pause_reason == "login" and (not restore or account.status == "paused"):
                     account.status, account.pause_reason = session.previous if restore else ("active", None)
+            self.notify_account(session.account_id)
         self.history[session.account_id] = "closed" if activate or restore else "failed"
         self.current = None
 
@@ -120,6 +124,7 @@ class LoginSessions:
                 raise HTTPException(404, "Login session not found")
             await self._close(session, activate=True)
             self.gate.status_cache.pop(account_id, None)
+            self.notify_account(account_id)
             return {"status": await self.gate.account_status(account_id)}
 
     async def shutdown(self):
