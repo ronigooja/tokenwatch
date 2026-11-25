@@ -525,7 +525,7 @@ def test_lazy_search_support_outcomes_are_persisted(core, settings):
 
 
 @pytest.mark.parametrize("payload,shape,expected", [
-    ({}, "type=dict keys=0 str=0 int=0 float=0 bool=0 null=0 list=0 dict=0 message=0 empty_keys=0 max_str=none", "error"),
+    ({}, None, "supported"),
     ([], "type=list keys=0 str=0 int=0 float=0 bool=0 null=0 list=0 dict=0 message=0 empty_keys=0 max_str=none", "error"),
     ({"ethereum": ["0xSECRET"]}, "type=dict keys=1 str=0 int=0 float=0 bool=0 null=0 list=1 dict=0 message=0 empty_keys=0 max_str=none", "error"),
     ({"ethereum": {"secretkey": 1}}, "type=dict keys=1 str=0 int=0 float=0 bool=0 null=0 list=0 dict=1 message=0 empty_keys=0 max_str=none", "error"),
@@ -576,6 +576,19 @@ def test_support_shape_counts_and_buckets():
         support_status({str(i): "x" * 65 for i in range(1001)} | {"message": "secret"})
     assert "keys=999 str=999" in str(error.value) and "max_str=<=256" in str(error.value)
     assert len(str(error.value)) <= 200
+
+
+def test_empty_support_response_resets_account_failures(core):
+    from tokenwatch.coins import support_status
+    store, fake, clock, gate, _ = core
+    with store.begin() as db:
+        db.get(Account, "a").failures = 2
+    fake.responses.append({})
+    assert asyncio.run(gate.get("a", "/token/addresses/native", None, support_status)) == "supported"
+    with store() as db:
+        account = db.get(Account, "a")
+        assert (account.status, account.failures) == ("active", 0)
+    assert fake.calls == [("a", "/token/addresses/native", None)]
 
 
 @pytest.mark.parametrize("status,path,body,paused", [

@@ -264,7 +264,7 @@ def token_addresses_shape(payload):
 def support_status(payload):
     if payload is UNSUPPORTED_TOKEN:
         return "unsupported"
-    if not isinstance(payload, dict) or not payload or not all(
+    if not isinstance(payload, dict) or not all(
         isinstance(chain, str) and chain and isinstance(value, str) for chain, value in payload.items()
     ) or "message" in payload:
         shape = token_addresses_shape(payload)
