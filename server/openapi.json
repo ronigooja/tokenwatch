@@ -797,6 +797,38 @@
               ],
               "title": "Status"
             }
+          },
+          {
+            "name": "price_check_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Price Check Status"
+            }
+          },
+          {
+            "name": "chain_check_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Chain Check Status"
+            }
           }
         ],
         "responses": {
@@ -1888,6 +1920,51 @@
       "post": {
         "summary": "Retry Coin",
         "operationId": "retry_coin_coins__coin_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "coin_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.~:-]*$",
+              "title": "Coin Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoinOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/coins/{coin_id}/price-check": {
+      "post": {
+        "summary": "Price Check",
+        "operationId": "price_check_coins__coin_id__price_check_post",
         "security": [
           {
             "HTTPBearer": []
@@ -3134,6 +3211,30 @@
             "type": "integer",
             "exclusiveMinimum": 0.0,
             "title": "Refresh Retry Seconds"
+          },
+          "price_tolerance_pct": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Tolerance Pct"
+          },
+          "price_max_age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Max Age Seconds"
           }
         },
         "additionalProperties": false,
@@ -3332,6 +3433,109 @@
               }
             ],
             "title": "Last Match Attempt"
+          },
+          "arkham_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Arkham Price"
+          },
+          "arkham_price_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Arkham Price At"
+          },
+          "arkham_chains": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Arkham Chains"
+          },
+          "price_check_status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "mismatch",
+                  "no_reference",
+                  "stale",
+                  "manual"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Check Status"
+          },
+          "price_check_ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Check Ratio"
+          },
+          "price_checked_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Checked At"
+          },
+          "price_check_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Check Reason"
+          },
+          "chain_check_status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "mismatch",
+                  "manual"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chain Check Status"
           }
         },
         "additionalProperties": false,
@@ -3346,7 +3550,15 @@
           "deployments",
           "matched_chains",
           "match_failures",
-          "last_match_attempt"
+          "last_match_attempt",
+          "arkham_price",
+          "arkham_price_at",
+          "arkham_chains",
+          "price_check_status",
+          "price_check_ratio",
+          "price_checked_at",
+          "price_check_reason",
+          "chain_check_status"
         ],
         "title": "CoinOut"
       },

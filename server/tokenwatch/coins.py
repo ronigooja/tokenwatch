@@ -18,6 +18,7 @@ ALPHA_URL = "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/walle
 NETWORK_URL = "https://www.binance.com/bapi/capital/v1/public/capital/getNetworkCoinAll"
 ASSET_URL = "https://www.binance.com/bapi/asset/v2/public/asset/asset/get-all-asset"
 FUTURES_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+TICKER_URL = "https://api.binance.com/api/v3/ticker/price"
 SEARCH_PATH = "/intelligence/search"
 EVM = re.compile(r"0x[0-9a-f]{40}", re.IGNORECASE)
 PRICING_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}")
@@ -240,6 +241,50 @@ def search_candidates(payload):
     return result
 
 
+def automatic_evidence(payload, pricing_id):
+    tokens = payload.get("tokens", []) if isinstance(payload, dict) else []
+    rows = [row for row in tokens if isinstance(row, dict) and isinstance(row.get("identifier"), dict)
+            and row["identifier"].get("pricingID") == pricing_id]
+    prices = [row.get("price") for row in rows if type(row.get("price")) in (int, float)
+              and math.isfinite(row["price"]) and row["price"] > 0]
+    chains = {d["chain"] for row in rows for d in [row["identifier"], *(row.get("deployments")
+              if isinstance(row.get("deployments"), list) else [])] if isinstance(d, dict)
+              and isinstance(d.get("chain"), str) and d["chain"]}
+    return (prices[0] if prices and all(p == prices[0] for p in prices) else None), sorted(chains)
+
+
+def check_price(db, coin, stamp):
+    if db.get(CoinMapping, coin.id):
+        coin.price_check_status = coin.chain_check_status = "manual"
+        coin.price_check_ratio = coin.price_checked_at = coin.price_check_reason = None
+        return
+    coin.price_check_status = coin.price_check_ratio = coin.price_checked_at = coin.price_check_reason = None
+    coin.chain_check_status = None
+    if coin.arkham_price_at is None and coin.arkham_chains is None:
+        return
+    if coin.arkham_chains is not None:
+        evidence = {d["chain"] for d in coin.deployments if d.get("chain")}
+        if evidence and coin.arkham_chains:
+            coin.chain_check_status = "ok" if {s.casefold() for s in evidence} & {
+                s.casefold() for s in coin.arkham_chains} else "mismatch"
+    setting = db.get(CatalogSettings, "matching")
+    if not setting or setting.price_tolerance_pct is None or setting.price_max_age_seconds is None:
+        coin.price_check_reason = "price settings not configured"
+        return
+    coin.price_checked_at = stamp
+    cache = db.get(CatalogCache, "binance")
+    payload = cache.payload if cache and cache.payload else {}
+    price = payload.get("prices", {}).get(coin.symbol)
+    fetched = payload.get("prices_at")
+    if price is None or coin.arkham_price is None or fetched is None:
+        coin.price_check_status, coin.price_check_reason = "no_reference", "missing Binance or Arkham price"
+    elif stamp - fetched > setting.price_max_age_seconds:
+        coin.price_check_status, coin.price_check_reason = "stale", "Binance price is stale"
+    else:
+        coin.price_check_ratio = coin.arkham_price / price
+        coin.price_check_status = "ok" if abs(coin.price_check_ratio - 1) * 100 <= setting.price_tolerance_pct else "mismatch"
+
+
 def token_addresses_shape(payload):
     types = {str: "str", int: "int", float: "float", bool: "bool", type(None): "null", list: "list", dict: "dict"}
     top = types.get(type(payload), "other")
@@ -313,6 +358,24 @@ class CoinCatalog:
                     feeds = []
                     for feed, url in FEEDS:
                         feeds.append(await public_json(client, url))
+                    try:
+                        response = await client.get(TICKER_URL)
+                        response.raise_for_status()
+                        tickers = response.json()
+                        if not isinstance(tickers, list):
+                            raise ValueError("invalid tickers")
+                        prices = {}
+                        for row in tickers:
+                            if not isinstance(row, dict) or not isinstance(row.get("symbol"), str):
+                                raise ValueError("invalid ticker")
+                            value = float(row.get("price"))
+                            if not math.isfinite(value) or value <= 0:
+                                continue
+                            if row["symbol"].endswith("USDT"):
+                                prices[row["symbol"][:-4]] = value
+                        prices_at = self.clock()
+                    except (httpx.HTTPError, ValueError, TypeError, KeyError):
+                        prices, prices_at = None, None
                 feed = "catalog"
                 snapshot = parse_feeds(*feeds)
                 error = None
@@ -336,6 +399,9 @@ class CoinCatalog:
                             break
                 cache.attempted_at, cache.error = stamp, error
                 if snapshot is not None:
+                    previous = cache.payload or {}
+                    snapshot["prices"] = prices if prices is not None else previous.get("prices", {})
+                    snapshot["prices_at"] = prices_at if prices is not None else previous.get("prices_at")
                     cache.payload, cache.refreshed_at = snapshot, stamp
                 self.reclassify(db, cache.payload)
             if error:
@@ -361,10 +427,15 @@ class CoinCatalog:
             elif coin.match_status and deployment_keys(coin.deployments).isdisjoint(deployment_keys(candidate.deployments)):
                 coin.match_status = coin.match_reason = coin.automatic_pricing_id = None
                 coin.automatic_chains = []
+                coin.arkham_price = coin.arkham_price_at = coin.arkham_chains = None
+                coin.price_check_status = coin.price_check_ratio = coin.price_checked_at = coin.price_check_reason = None
+                coin.chain_check_status = None
                 coin.searched_deployments = []
             coin.symbol, coin.sources, coin.deployments = candidate.symbol, [candidate.feed], candidate.deployments
             coin.catalog_status, coin.catalog_reason = classify(candidate, snapshot, futures, policies, candidate.id in mapped_ids)
             sync_coin(db, coin)
+            if candidate.id in mapped_ids:
+                coin.price_check_status = coin.chain_check_status = "manual"
         for coin in existing.values():
             coin.catalog_status, coin.catalog_reason = "unknown_onchain", "not in the validated Binance catalog"
             sync_coin(db, coin)
@@ -440,8 +511,8 @@ class CoinCatalog:
                             sync_coin(db, current)
                     return True
                 address = deployment["address"]
-                matches = await request(SEARCH_PATH, {"query": address},
-                                              lambda payload: search_matches(payload, address))
+                matches, evidence = await request(SEARCH_PATH, {"query": address},
+                    lambda payload: (search_matches(payload, address), payload))
                 with self.store.begin() as db:
                     current = db.get(Coin, coin.id)
                     if current and current.match_status is None and (
@@ -450,6 +521,9 @@ class CoinCatalog:
                         if len(matches) == 1:
                             pricing_id, chains = next(iter(matches.items()))
                             current.automatic_pricing_id, current.automatic_chains = pricing_id, sorted(chains)
+                            current.arkham_price, current.arkham_chains = automatic_evidence(evidence, pricing_id)
+                            current.arkham_price_at = self.clock() if current.arkham_price is not None else None
+                            check_price(db, current, self.clock())
                             current.match_status, current.match_reason = "pending_support", None
                             if deployment["feed"] == "alpha":
                                 for chain in chains:

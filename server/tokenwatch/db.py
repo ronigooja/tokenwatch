@@ -36,6 +36,14 @@ class Coin(Base):
     manual_status: Mapped[str | None]
     match_failures: Mapped[int] = mapped_column(default=0, server_default="0")
     last_match_attempt: Mapped[float | None]
+    arkham_price: Mapped[float | None]
+    arkham_price_at: Mapped[float | None]
+    arkham_chains: Mapped[list | None] = mapped_column(JSON)
+    price_check_status: Mapped[str | None]
+    price_check_ratio: Mapped[float | None]
+    price_checked_at: Mapped[float | None]
+    price_check_reason: Mapped[str | None]
+    chain_check_status: Mapped[str | None]
 
 
 class CatalogSettings(Base):
@@ -43,6 +51,8 @@ class CatalogSettings(Base):
     key: Mapped[str] = mapped_column(primary_key=True)
     failure_limit: Mapped[int]
     refresh_retry_seconds: Mapped[int | None]
+    price_tolerance_pct: Mapped[float | None]
+    price_max_age_seconds: Mapped[int | None]
 
 
 class CoinMapping(Base):
@@ -282,7 +292,7 @@ def open_store(path: Path):
             Base.metadata.create_all(connection)
         elif version == 1:
             migrate_v1(connection)
-        elif version not in (2, 3, 4, 5, 6):
+        elif version not in (2, 3, 4, 5, 6, 7):
             raise RuntimeError(f"Unsupported database schema version: {version}")
         if version == 2:
             connection.exec_driver_sql("ALTER TABLE jobs ADD COLUMN last_error VARCHAR")
@@ -296,9 +306,23 @@ def open_store(path: Path):
             row[1] for row in connection.exec_driver_sql("PRAGMA table_info(catalog_settings)")
         }:
             connection.exec_driver_sql("ALTER TABLE catalog_settings ADD COLUMN refresh_retry_seconds INTEGER")
+        if version in (2, 3, 4, 5, 6):
+            coin_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(coins)")}
+            for name, kind in (("arkham_price", "FLOAT"), ("arkham_price_at", "FLOAT"), ("arkham_chains", "JSON"),
+                               ("price_check_status", "VARCHAR"), ("price_check_ratio", "FLOAT"),
+                               ("price_checked_at", "FLOAT"), ("price_check_reason", "VARCHAR"),
+                               ("chain_check_status", "VARCHAR")):
+                if name not in coin_columns:
+                    connection.exec_driver_sql(f"ALTER TABLE coins ADD COLUMN {name} {kind}")
+            columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(catalog_settings)")}
+            for name, kind in (("price_tolerance_pct", "FLOAT"), ("price_max_age_seconds", "INTEGER")):
+                if name not in columns:
+                    connection.exec_driver_sql(f"ALTER TABLE catalog_settings ADD COLUMN {name} {kind}")
+            connection.exec_driver_sql("UPDATE coins SET price_check_status='manual', chain_check_status='manual' "
+                                       "WHERE id IN (SELECT coin_id FROM coin_mappings)")
         if version == 1 and connection.exec_driver_sql("PRAGMA foreign_key_check").first():
             raise RuntimeError("Foreign key violation after coin schema migration")
-        connection.execute(text("PRAGMA user_version=6"))
+        connection.execute(text("PRAGMA user_version=7"))
         connection.commit()
         connection.execute(text("PRAGMA foreign_keys=ON"))
     return sessionmaker(engine, expire_on_commit=False)

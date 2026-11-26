@@ -67,11 +67,21 @@ class CoinOut(Schema):
     matched_chains: list[str]
     match_failures: int
     last_match_attempt: float | None
+    arkham_price: float | None
+    arkham_price_at: float | None
+    arkham_chains: list[str] | None
+    price_check_status: Literal["ok", "mismatch", "no_reference", "stale", "manual"] | None
+    price_check_ratio: float | None
+    price_checked_at: float | None
+    price_check_reason: str | None
+    chain_check_status: Literal["ok", "mismatch", "manual"] | None
 
 
 class CatalogSettingsInput(Schema):
     failure_limit: Annotated[int, Field(gt=0, strict=True)]
     refresh_retry_seconds: Annotated[int, Field(gt=0, strict=True)]
+    price_tolerance_pct: NonNegative | None = None
+    price_max_age_seconds: Annotated[int, Field(gt=0, strict=True)] | None = None
 
 
 class CatalogStatus(Schema):
