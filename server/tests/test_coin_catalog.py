@@ -11,7 +11,7 @@ from test_core import core, settings, balance
 from tokenwatch.api import create_app
 from tokenwatch.browser.client import _decode
 from tokenwatch.browser.transport import Response
-from tokenwatch.coins import ALPHA_URL, ASSET_URL, FUTURES_URL, NETWORK_URL, SPOT_URL, CoinCatalog
+from tokenwatch.coins import ALPHA_URL, ASSET_URL, FUTURES_URL, NETWORK_URL, SPOT_URL, TICKER_URL, CoinCatalog
 from tokenwatch.db import (Account, CatalogCache, CatalogExclusion, CatalogSettings, ChainObservation, Coin, CoinMapping,
                            DailyCollection, Event, FuturesMapping, Job, PushLog, Snapshot, Transfer, TransferCoin,
                            now, open_store)
@@ -135,7 +135,7 @@ def mock_feeds(feeds, calls):
     def fetch(request):
         url = str(request.url)
         calls.append(url)
-        return httpx.Response(200, json=feeds[url])
+        return httpx.Response(200, json=[] if url == TICKER_URL else feeds[url])
     return httpx.MockTransport(fetch)
 
 
@@ -235,7 +235,7 @@ def test_catalog_rules_futures_identity_and_fallback(core):
             return {row.symbol: (row.status, row.reason) for row in db.scalars(select(Coin))}
 
     asyncio.run(catalog.refresh_snapshot())
-    assert calls == list(feeds)
+    assert calls == [*feeds, TICKER_URL]
     first = states()
     assert first["STOCK"] == ("excluded", "stablecoin; stock")
     for symbol, reason in [("FIAT", "fiat"), ("GOLD", "commodity"), ("USD", "stablecoin")]:
@@ -254,7 +254,7 @@ def test_catalog_rules_futures_identity_and_fallback(core):
     del feeds[SPOT_URL]["symbols"][0]["isSpotTradingAllowed"]
     clock.value += 10
     asyncio.run(catalog.refresh_snapshot())
-    assert calls == list(feeds) * 2
+    assert calls == [*feeds, TICKER_URL] * 2
     assert states()["SHIB"][0] == "pending_match"
     with store() as db:
         cache = db.get(CatalogCache, "binance")
@@ -276,7 +276,7 @@ def configure_matching(settings):
     with TestClient(create_app(settings, run_scheduler=False)) as client:
         headers = {"Authorization": "Bearer test-token"}
         assert client.put("/coin-catalog/settings", json={"failure_limit": 3}, headers=headers).status_code == 422
-        values = {"failure_limit": 3, "refresh_retry_seconds": 60}
+        values = {"failure_limit": 3, "refresh_retry_seconds": 60, "price_tolerance_pct": None, "price_max_age_seconds": None}
         assert client.put("/coin-catalog/settings", json=values, headers=headers).json() == values
         assert client.get("/coin-catalog/settings", headers=headers).json() == values
 
@@ -297,6 +297,95 @@ def test_search_matches_realistic_responses():
     assert search_matches({"bestMatches": [{}], "tokens": [payload["tokens"][1]]}, contract) == {
         "other": {"ethereum"}}
     assert not search_matches({"bestMatches": []}, contract)
+
+
+@pytest.mark.parametrize("price,reference,age,configured,expected", [
+    (10.5, 10, 0, True, "ok"), (12, 10, 0, True, "mismatch"),
+    (10, None, 0, True, "no_reference"), (10, 10, 61, True, "stale"),
+    (10, 10, 0, False, None),
+])
+def test_automatic_price_check(core, settings, price, reference, age, configured, expected):
+    store, fake, clock, gate, _ = core
+    feeds = catalog_feeds()
+    feeds[SPOT_URL]["symbols"] = [feeds[SPOT_URL]["symbols"][-1]]
+    feeds[ALPHA_URL] = envelope([{"symbol": "GAME", "chainId": "1", "contractAddress": address(101)}])
+    def respond(request):
+        if str(request.url) == TICKER_URL:
+            return httpx.Response(200, json=[] if reference is None else [{"symbol": "GAMEUSDT", "price": str(reference)}])
+        return httpx.Response(200, json=feeds[str(request.url)])
+    catalog = CoinCatalog(store, gate, httpx.MockTransport(respond), clock)
+    asyncio.run(catalog.refresh_snapshot())
+    with store.begin() as db:
+        cache = db.get(CatalogCache, "binance")
+        cache.payload = {**cache.payload, "prices_at": clock() - age}
+        db.add(CatalogSettings(key="matching", failure_limit=3, refresh_retry_seconds=60,
+                               price_tolerance_pct=10 if configured else None,
+                               price_max_age_seconds=60 if configured else None))
+    item = token("game", "1", address(101))
+    item["price"] = price
+    fake.responses.append(search(item))
+    asyncio.run(catalog.match_next(SimpleNamespace(account_id="a")))
+    coin_id = f"alpha:1:{address(101)}"
+    with store() as db:
+        coin = db.get(Coin, coin_id)
+        assert coin.price_check_status == expected
+        assert coin.chain_check_status == "ok"
+        assert coin.status == "pending_support"
+        if not configured:
+            assert coin.price_check_reason == "price settings not configured"
+    fake.responses.append({"ethereum": "address"})
+    asyncio.run(catalog.match_next(SimpleNamespace(account_id="a")))
+    with store() as db:
+        assert db.get(Coin, coin_id).status == "supported"
+        assert db.get(Coin, coin_id).price_check_status == expected
+
+
+def test_manual_price_check_and_restore(core, settings):
+    store, fake, clock, gate, _ = core
+    feeds, calls = catalog_feeds(), []
+    feeds[ALPHA_URL] = envelope([{"symbol": "GAME", "chainId": "1", "contractAddress": address(101)}])
+    catalog = CoinCatalog(store, gate, mock_feeds(feeds, calls), clock)
+    asyncio.run(catalog.refresh_snapshot())
+    with store.begin() as db:
+        db.add(CatalogSettings(key="matching", failure_limit=3, refresh_retry_seconds=60,
+                               price_tolerance_pct=10, price_max_age_seconds=60))
+    item = token("game", "ethereum", address(101))
+    item["price"] = 20
+    fake.responses.append(search(item))
+    asyncio.run(catalog.match_next(SimpleNamespace(account_id="a")))
+    coin_id = f"alpha:1:{address(101)}"
+    with TestClient(create_app(settings, run_scheduler=False)) as client:
+        client.headers.update({"Authorization": "Bearer test-token"})
+        before = (len(calls), len(fake.calls))
+        assert client.get(f"/coins/{coin_id}").json()["chain_check_status"] == "mismatch"
+        assert client.put(f"/coins/{coin_id}/mapping", json={"pricing_id": "manual"}).status_code == 200
+        checked = client.post(f"/coins/{coin_id}/price-check").json()
+        assert checked["price_check_status"] == checked["chain_check_status"] == "manual"
+        assert any(row["id"] == coin_id for row in client.get("/coins?price_check_status=manual").json())
+        assert client.delete(f"/coins/{coin_id}/mapping").status_code == 204
+        restored = client.get(f"/coins/{coin_id}").json()
+        assert restored["price_check_status"] == "no_reference"
+        assert restored["chain_check_status"] == "mismatch"
+        assert (len(calls), len(fake.calls)) == before
+
+
+def test_ticker_failure_preserves_prices(core):
+    store, _, clock, gate, _ = core
+    feeds = catalog_feeds()
+    fail = False
+    def respond(request):
+        if str(request.url) == TICKER_URL:
+            return httpx.Response(503) if fail else httpx.Response(200, json=[{"symbol": "GAMEUSDT", "price": "2"}])
+        return httpx.Response(200, json=feeds[str(request.url)])
+    catalog = CoinCatalog(store, gate, httpx.MockTransport(respond), clock)
+    assert asyncio.run(catalog.refresh_snapshot()) is None
+    clock.value += 100
+    fail = True
+    assert asyncio.run(catalog.refresh_snapshot()) is None
+    with store() as db:
+        cache = db.get(CatalogCache, "binance")
+        assert cache.payload["prices"] == {"GAME": 2}
+        assert cache.payload["prices_at"] == clock() - 100
 
 
 @pytest.mark.parametrize("payload,expected", [
@@ -801,7 +890,9 @@ def test_catalog_deployments_serialize_without_internal_fields(settings):
             result = response.json()
             for coin in result if isinstance(result, list) else [result]:
                 assert set(coin) == {"id", "symbol", "pricing_id", "status", "reason", "sources",
-                                     "deployments", "matched_chains", "match_failures", "last_match_attempt"}
+                                     "deployments", "matched_chains", "match_failures", "last_match_attempt",
+                                     "arkham_price", "arkham_price_at", "arkham_chains", "price_check_status",
+                                     "price_check_ratio", "price_checked_at", "price_check_reason", "chain_check_status"}
                 for deployment in coin["deployments"]:
                     assert set(deployment) == {"feed", "chain", "address", "deposit_enabled", "withdraw_enabled"}
 
@@ -934,5 +1025,29 @@ def test_migrate_v4_preserves_coin(tmp_path):
     store = open_store(path)
     with store() as db:
         assert db.get(Coin, "old").searched_deployments == []
-        assert db.scalar(text("PRAGMA user_version")) == 6
+        assert db.scalar(text("PRAGMA user_version")) == 7
+    store.kw["bind"].dispose()
+
+
+def test_migrate_v6_preserves_data(tmp_path):
+    import sqlite3
+    path = tmp_path / "v6.db"
+    store = open_store(path)
+    with store.begin() as db:
+        db.add(Coin(id="old", symbol="OLD", status="supported", pricing_id="old"))
+        db.add(CatalogSettings(key="matching", failure_limit=3, refresh_retry_seconds=60))
+    store.kw["bind"].dispose()
+    with sqlite3.connect(path) as db:
+        for column in ("arkham_price", "arkham_price_at", "arkham_chains", "price_check_status",
+                       "price_check_ratio", "price_checked_at", "price_check_reason", "chain_check_status"):
+            db.execute(f"ALTER TABLE coins DROP COLUMN {column}")
+        for column in ("price_tolerance_pct", "price_max_age_seconds"):
+            db.execute(f"ALTER TABLE catalog_settings DROP COLUMN {column}")
+        db.execute("PRAGMA user_version=6")
+    store = open_store(path)
+    with store() as db:
+        coin = db.get(Coin, "old")
+        assert (coin.symbol, coin.status, coin.pricing_id, coin.price_check_status) == ("OLD", "supported", "old", None)
+        assert db.get(CatalogSettings, "matching").failure_limit == 3
+        assert db.scalar(text("PRAGMA user_version")) == 7
     store.kw["bind"].dispose()
