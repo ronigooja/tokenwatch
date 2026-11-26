@@ -16,25 +16,35 @@ Browser readiness and safe pre-fetch probing are described in [architecture.md](
 
 ## Endpoints
 
-| Endpoint | Use | Limits |
-|---|---|---|
-| `GET /user` | Login detection from the existing page context, with the same signing and account request gate | Logged-in sessions return HTTP 200 and user JSON; anonymous requests are denied. Login detection relies on HTTP status, not specific user fields; the user response schema is not verified. |
-| `GET /transfers?base=all&flow=all&sortKey=time&sortDir=desc&limit=N&offset=M&tokens=COIN` | Latest transfers of a coin; optional `usdGte` filters by value | `offset + limit` must be ≤ 100 |
-| `GET /intelligence/entity_balance_changes?interval=7d&orderBy=balance_usd_pct_change&orderDir=desc&balanceMin=USD&pricingIds=COIN&limit=50&offset=0` | Entities holding a coin with balance and previous balance (`balanceUnit`, `balanceUsd`, `prevBalanceUnit`, `prevBalanceUsd`) | `balanceMin` is a non-negative integer. The page sends one request with `balanceMin=100000`; daily jobs configure their own minimum. No paging. |
-| `GET /intelligence/search?query=...` | Find the Arkham coin number for a contract address or free text via [catalog search](architecture.md#coin-list). HTTP 200 without `tokens` means no address match. A recognized address without a coin number has only `identifier.chain` and `identifier.address`, without `pricingID` or `price`, and is skipped. Items with a coin number carry `identifier.pricingID`, numeric `price` and `price24hAgo`, and `deployments`. Match usable identifier or deployment addresses and chains to the pricing ID. The symbol-query item shape is not yet observed. | Address matching makes one request per usable deployment until resolved; free-text search makes one request per call. |
-| `GET /token/addresses/{pricing_id}` | Verify support for the Arkham coin number. HTTP 200 returns an object keyed by Arkham chain names with opaque string values. An empty object is treated as a known coin with no token deployments; this meaning is inferred from the shape, not Arkham documentation. Empty objects are observed for native coins bitcoin, ethereum, solana, tron, avalanche-2, dogecoin, zcash, and hyperliquid. A mismatched 200 is a `BadResponse`; its logged sanitized shape contains the top-level type, capped key and value-type counts, presence of `message`, capped empty-key count, and maximum string-length bucket, never body keys or values. | HTTP 400 with a JSON object containing only `message` means unsupported on this endpoint alone. It does not pause the account, count as a failure, or extend spacing. Other HTTP 400/403 responses pause under the normal gate; auth denials, challenges, and HTTP 429 retain their usual handling. |
+All requests use GET and URL-encoded query strings. Numeric parameter types below describe their meaning; the client sends their decimal string representations. `pricing_id` is Arkham's `pricingID`. Responses are JSON.
 
-- `COIN` is Arkham's `pricingID` (for example `brevis`, `avalanche-2`).
-- Omitting `pricingIds` returns entities with per-coin `tokenBalances`. Manual snapshots encode multiple pricing IDs as one comma-separated parameter.
-- `interval` values used by the page: `7d`, `14d`, `30d`.
-- Responses are JSON; transfers are under `transfers`, balance changes are a top-level array.
-- Other HTTP 400/403 rejections retain normal account pause behavior and include `reject_detail` in pause events and warnings. For a JSON object it contains up to eight top-level key names, each cleaned and capped at 24 characters, and a string `message` cleaned and capped at 120 characters; cleaning removes control characters and collapses whitespace. Non-object bodies expose only `json-nonobject` or `non-json` and a length bucket (`<=256`, `<=2048`, or `>2048` characters). The message and key names are upstream-controlled and can contain sensitive information.
-- Login probes require a nonempty JSON object after successful HTTP decoding; they do not assume an account identifier field name. Status cache behavior is defined in [architecture.md](architecture.md).
-- Matching failure tracking, retry ordering, and configuration are defined in [architecture.md](architecture.md#coin-list); account gate and backoff behavior remains in effect for each request.
+| Path | Purpose and caller | Parameters sent | Response shape relied on |
+|---|---|---|---|
+| `/user` | Login detection: `RequestGate.account_status` and `BrowserUpstreamClient.account_status` | None | Nonempty object; specific keys and value types unobserved. Empty objects and other JSON values yield unknown status. |
+| `/transfers` | Latest coin transfers: `Collectors.transfers` | `base`, `flow`: strings `all`; `sortKey`: string `time`; `sortDir`: string `desc`; `limit`: integer 100; `offset`: integer 0; `tokens`: pricing ID string | Object with `transfers`: array, at most 100 entries. |
+| `/intelligence/entity_balance_changes` | Daily balances and manual snapshots: `Collectors.daily_coin`, `Collectors.snapshot` | `interval`: string `7d`, `14d`, or `30d` (daily uses `7d`); `orderBy`: string `balance_usd_pct_change`; `orderDir`: string `desc`; `limit`: integer 50; `offset`: integer 0; optional `balanceMin`: non-negative integer; optional `pricingIds`: comma-separated pricing ID string | Array, at most 50 entries. Entries include balance and previous balance fields; without `pricingIds`, per-coin `tokenBalances` can be returned. |
+| `/intelligence/search` | Contract matching and [catalog search](architecture.md#coin-list): `CoinCatalog.match_next`, `api.search_catalog` | `query`: string (contract address or free text, including symbol) | Object with optional `tokens`: array. Missing or null `tokens` means no address match; catalog search also treats a non-array as no candidates. |
+| `/token/addresses/{pricing_id}` | Verify support: `CoinCatalog.match_next` | Path `pricing_id`: string; no query parameters | Object with nonempty chain-name string keys and opaque string values; `message` is not allowed in a successful response. An empty object is supported; its meaning as no token deployments is inferred. Empty objects are observed for native coins bitcoin, ethereum, solana, tron, avalanche-2, dogecoin, zcash, and hyperliquid. |
+
+The upstream transfer window has `offset + limit` ≤ 100; upstream also supports an optional `usdGte` value filter, which the collector does not send. The upstream page sends a single balance request with `balanceMin=100000`; Tokenwatch does not page balance results. The upstream `limits` object's keys, types, and values are unobserved in code and tests.
+
+### Search items
+
+For address searches, a recognized item without `identifier.pricingID` has been observed with `identifier.chain` and `identifier.address`, without `price`; both matchers skip it. Items with a pricing ID have been observed with numeric `price`, `price24hAgo`, and `deployments`. Address matching associates a valid `identifier.pricingID` with matching `chain` and `address` in the identifier or deployments; it sends one request per usable deployment until resolved.
+
+For symbol or other free-text searches, the parser uses `identifier.pricingID` as output `pricing_id`, optional string `name` and `symbol`, optional numeric `price`, `rank`, `marketCap`, and `market_cap`, and string deployment `chain` values as `chains`. It preserves symbol case, including lowercase; it does not require lowercase. It returns at most 20 candidates. Symbol queries have been observed returning items with a pricing ID, name, lowercase symbol, price, and deployment chains; other item fields are unobserved.
+
+### Errors
+
+HTTP 400 on `/token/addresses/{pricing_id}` with a JSON object whose only key is `message` means unsupported on that endpoint; it does not pause the account, count as a failure, or extend spacing. An invalid successful token-address response is `BadResponse`; its logged sanitized shape contains the top-level type, capped key and value-type counts, presence of `message`, capped empty-key count, and maximum string-length bucket, never body keys or values.
+
+HTTP 401 or an anonymous-denial body maps to `AuthRequired`. HTTP 429 maps to `RateLimited`; a Cloudflare challenge maps to `Blocked`. Other HTTP 400/403 responses map to `RequestRejected`. These errors pause the account and apply backoff; `Retry-After` can extend rate-limit backoff. Pause events and warnings include sanitized `reject_detail` for `RequestRejected`: an object exposes up to eight cleaned key names capped at 24 characters and a cleaned string `message` capped at 120 characters; cleaning removes control characters and collapses whitespace. Non-object bodies expose only `json-nonobject` or `non-json` and a length bucket (`<=256`, `<=2048`, or `>2048` characters). Key names and messages remain upstream-controlled and can contain sensitive information. Other non-success statuses and invalid JSON map to `BadResponse`.
+
+For account gate, status cache, retry ordering, and matching configuration, see [architecture.md](architecture.md).
 
 ## Transfer fields used
 
-`id`, `transactionHash`, `fromAddress`, `toAddress` (each with `address`, `chain`, optional `arkhamEntity` and `arkhamLabel`), `tokenAddress`, `tokenSymbol`, `unitValue`, `blockTimestamp`, `blockNumber`.
+The collector reads `id`, `transactionHash`, `chain`, `fromAddress`, `toAddress` (each with `address`, `chain`, optional `arkhamEntity`), and `blockTimestamp`. Upstream transfer fields also include `arkhamLabel`, `tokenAddress`, `tokenSymbol`, `unitValue`, and `blockNumber`; the collector does not read them.
 
 The server reads USD values from `historicalUSD` or `usdValue` if supplied; otherwise the USD value is unknown.
 
