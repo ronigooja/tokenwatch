@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import secrets
-import time
 import unicodedata
 from collections import defaultdict
 from contextlib import asynccontextmanager, suppress
@@ -20,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import schemas as s
-from .coins import CoinCatalog, SEARCH_PATH, check_price, deployment_keys, search_candidates, sync_coin
+from .coins import CoinCatalog, SEARCH_PATH, deployment_keys, search_candidates, sync_coin
 from .hub import Hub
 from .collectors import Collectors, snapshot_diff
 from .config import load_settings
@@ -257,10 +256,9 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
 
     @app.get("/coins", response_model=list[s.CoinOut], dependencies=auth, operation_id="list_coins")
     def list_coins(db: DB, status: s.CoinStatus | None = None,
-                   price_check_status: str | None = None, chain_check_status: str | None = None):
+                   price_check_status: str | None = None):
         query = select(Coin).order_by(Coin.symbol, Coin.id)
-        for column, value in ((Coin.status, status), (Coin.price_check_status, price_check_status),
-                              (Coin.chain_check_status, chain_check_status)):
+        for column, value in ((Coin.status, status), (Coin.price_check_status, price_check_status)):
             if value is not None:
                 query = query.where(column == value)
         return db.scalars(query).all()
@@ -565,7 +563,8 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
         cache = db.get(CatalogCache, "binance")
         CoinCatalog.reclassify(db, cache.payload if cache else None)
         sync_coin(db, coin)
-        check_price(db, coin, time.time())
+        coin.price_check_status = "manual"
+        coin.price_check_ratio = coin.price_checked_at = coin.price_check_reason = None
         return body
 
     @app.delete("/coins/{coin_id}/mapping", status_code=204, dependencies=auth)
@@ -576,15 +575,8 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
         cache = db.get(CatalogCache, "binance")
         CoinCatalog.reclassify(db, cache.payload if cache else None)
         sync_coin(db, coin)
-        check_price(db, coin, time.time())
+        coin.price_check_status = coin.price_check_ratio = coin.price_checked_at = coin.price_check_reason = None
         return Response(status_code=204)
-
-    @app.post("/coins/{coin_id}/price-check", response_model=s.CoinOut, dependencies=auth)
-    def price_check(coin_id: s.CoinRef, db: DB):
-        coin = find(db, Coin, coin_id)
-        if not db.get(CoinMapping, coin.id):
-            check_price(db, coin, time.time())
-        return coin
 
     @app.get("/transfers", response_model=list[s.TransferOut], dependencies=auth)
     def list_transfers(db: DB, coin_id: s.CoinRef | None = None, start: datetime | None = None, end: datetime | None = None,

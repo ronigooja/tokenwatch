@@ -301,7 +301,7 @@ def test_search_matches_realistic_responses():
 
 @pytest.mark.parametrize("price,reference,age,configured,expected", [
     (10.5, 10, 0, True, "ok"), (12, 10, 0, True, "mismatch"),
-    (10, None, 0, True, "no_reference"), (10, 10, 61, True, "stale"),
+    (10, None, 0, True, "no_reference"), (None, 10, 0, True, "no_reference"), (10, 10, 61, True, "stale"),
     (10, 10, 0, False, None),
 ])
 def test_automatic_price_check(core, settings, price, reference, age, configured, expected):
@@ -329,7 +329,6 @@ def test_automatic_price_check(core, settings, price, reference, age, configured
     with store() as db:
         coin = db.get(Coin, coin_id)
         assert coin.price_check_status == expected
-        assert coin.chain_check_status == "ok"
         assert coin.status == "pending_support"
         if not configured:
             assert coin.price_check_reason == "price settings not configured"
@@ -338,9 +337,14 @@ def test_automatic_price_check(core, settings, price, reference, age, configured
     with store() as db:
         assert db.get(Coin, coin_id).status == "supported"
         assert db.get(Coin, coin_id).price_check_status == expected
+    with store.begin() as db:
+        db.get(CatalogSettings, "matching").price_tolerance_pct = 0
+    asyncio.run(catalog.refresh_snapshot())
+    with store() as db:
+        assert db.get(Coin, coin_id).price_check_status == expected
 
 
-def test_manual_price_check_and_restore(core, settings):
+def test_manual_price_check_and_clear(core, settings):
     store, fake, clock, gate, _ = core
     feeds, calls = catalog_feeds(), []
     feeds[ALPHA_URL] = envelope([{"symbol": "GAME", "chainId": "1", "contractAddress": address(101)}])
@@ -357,15 +361,14 @@ def test_manual_price_check_and_restore(core, settings):
     with TestClient(create_app(settings, run_scheduler=False)) as client:
         client.headers.update({"Authorization": "Bearer test-token"})
         before = (len(calls), len(fake.calls))
-        assert client.get(f"/coins/{coin_id}").json()["chain_check_status"] == "mismatch"
         assert client.put(f"/coins/{coin_id}/mapping", json={"pricing_id": "manual"}).status_code == 200
-        checked = client.post(f"/coins/{coin_id}/price-check").json()
-        assert checked["price_check_status"] == checked["chain_check_status"] == "manual"
+        checked = client.get(f"/coins/{coin_id}").json()
+        assert checked["price_check_status"] == "manual"
+        assert client.post(f"/coins/{coin_id}/price-check").status_code in (404, 405)
         assert any(row["id"] == coin_id for row in client.get("/coins?price_check_status=manual").json())
         assert client.delete(f"/coins/{coin_id}/mapping").status_code == 204
         restored = client.get(f"/coins/{coin_id}").json()
-        assert restored["price_check_status"] == "no_reference"
-        assert restored["chain_check_status"] == "mismatch"
+        assert all(restored[key] is None for key in ("price_check_status", "price_check_ratio", "price_checked_at", "price_check_reason"))
         assert (len(calls), len(fake.calls)) == before
 
 
@@ -891,8 +894,7 @@ def test_catalog_deployments_serialize_without_internal_fields(settings):
             for coin in result if isinstance(result, list) else [result]:
                 assert set(coin) == {"id", "symbol", "pricing_id", "status", "reason", "sources",
                                      "deployments", "matched_chains", "match_failures", "last_match_attempt",
-                                     "arkham_price", "arkham_price_at", "arkham_chains", "price_check_status",
-                                     "price_check_ratio", "price_checked_at", "price_check_reason", "chain_check_status"}
+                                     "price_check_status", "price_check_ratio", "price_checked_at", "price_check_reason"}
                 for deployment in coin["deployments"]:
                     assert set(deployment) == {"feed", "chain", "address", "deposit_enabled", "withdraw_enabled"}
 
@@ -1025,7 +1027,7 @@ def test_migrate_v4_preserves_coin(tmp_path):
     store = open_store(path)
     with store() as db:
         assert db.get(Coin, "old").searched_deployments == []
-        assert db.scalar(text("PRAGMA user_version")) == 7
+        assert db.scalar(text("PRAGMA user_version")) == 8
     store.kw["bind"].dispose()
 
 
@@ -1038,8 +1040,7 @@ def test_migrate_v6_preserves_data(tmp_path):
         db.add(CatalogSettings(key="matching", failure_limit=3, refresh_retry_seconds=60))
     store.kw["bind"].dispose()
     with sqlite3.connect(path) as db:
-        for column in ("arkham_price", "arkham_price_at", "arkham_chains", "price_check_status",
-                       "price_check_ratio", "price_checked_at", "price_check_reason", "chain_check_status"):
+        for column in ("price_check_status", "price_check_ratio", "price_checked_at", "price_check_reason"):
             db.execute(f"ALTER TABLE coins DROP COLUMN {column}")
         for column in ("price_tolerance_pct", "price_max_age_seconds"):
             db.execute(f"ALTER TABLE catalog_settings DROP COLUMN {column}")
@@ -1049,5 +1050,34 @@ def test_migrate_v6_preserves_data(tmp_path):
         coin = db.get(Coin, "old")
         assert (coin.symbol, coin.status, coin.pricing_id, coin.price_check_status) == ("OLD", "supported", "old", None)
         assert db.get(CatalogSettings, "matching").failure_limit == 3
-        assert db.scalar(text("PRAGMA user_version")) == 7
+        assert db.scalar(text("PRAGMA user_version")) == 8
+    store.kw["bind"].dispose()
+
+
+def test_migrate_v7_clears_results_and_drops_evidence(tmp_path):
+    import sqlite3
+    path = tmp_path / "v7.db"
+    store = open_store(path)
+    with store.begin() as db:
+        db.add_all([Coin(id="old", symbol="OLD", status="supported", pricing_id="old",
+                         price_check_status="mismatch", price_check_ratio=2, price_checked_at=123),
+                    Coin(id="manual", symbol="MANUAL", status="supported", pricing_id="manual",
+                         price_check_status="ok", price_check_ratio=1, price_checked_at=123)])
+        db.flush()
+        db.add(CoinMapping(coin_id="manual", pricing_id="manual"))
+    store.kw["bind"].dispose()
+    with sqlite3.connect(path) as db:
+        for name, kind in (("arkham_price", "FLOAT"), ("arkham_price_at", "FLOAT"),
+                           ("arkham_chains", "JSON"), ("chain_check_status", "VARCHAR")):
+            db.execute(f"ALTER TABLE coins ADD COLUMN {name} {kind}")
+        db.execute("PRAGMA user_version=7")
+    store = open_store(path)
+    with store() as db:
+        old, manual = db.get(Coin, "old"), db.get(Coin, "manual")
+        assert (old.symbol, old.status, old.pricing_id, old.price_check_status) == ("OLD", "supported", "old", None)
+        assert manual.price_check_status == "manual"
+        assert manual.price_check_ratio is None and manual.price_checked_at is None
+        assert db.scalar(text("PRAGMA user_version")) == 8
+        columns = {row[1] for row in db.execute(text("PRAGMA table_info(coins)"))}
+        assert not columns.intersection({"arkham_price", "arkham_price_at", "arkham_chains", "chain_check_status"})
     store.kw["bind"].dispose()

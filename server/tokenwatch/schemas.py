@@ -67,14 +67,10 @@ class CoinOut(Schema):
     matched_chains: list[str]
     match_failures: int
     last_match_attempt: float | None
-    arkham_price: float | None
-    arkham_price_at: float | None
-    arkham_chains: list[str] | None
     price_check_status: Literal["ok", "mismatch", "no_reference", "stale", "manual"] | None
     price_check_ratio: float | None
     price_checked_at: float | None
     price_check_reason: str | None
-    chain_check_status: Literal["ok", "mismatch", "manual"] | None
 
 
 class CatalogSettingsInput(Schema):

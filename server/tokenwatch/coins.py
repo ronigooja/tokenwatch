@@ -241,32 +241,17 @@ def search_candidates(payload):
     return result
 
 
-def automatic_evidence(payload, pricing_id):
+def automatic_price(payload, pricing_id):
     tokens = payload.get("tokens", []) if isinstance(payload, dict) else []
     rows = [row for row in tokens if isinstance(row, dict) and isinstance(row.get("identifier"), dict)
             and row["identifier"].get("pricingID") == pricing_id]
     prices = [row.get("price") for row in rows if type(row.get("price")) in (int, float)
               and math.isfinite(row["price"]) and row["price"] > 0]
-    chains = {d["chain"] for row in rows for d in [row["identifier"], *(row.get("deployments")
-              if isinstance(row.get("deployments"), list) else [])] if isinstance(d, dict)
-              and isinstance(d.get("chain"), str) and d["chain"]}
-    return (prices[0] if prices and all(p == prices[0] for p in prices) else None), sorted(chains)
+    return prices[0] if prices and all(p == prices[0] for p in prices) else None
 
 
-def check_price(db, coin, stamp):
-    if db.get(CoinMapping, coin.id):
-        coin.price_check_status = coin.chain_check_status = "manual"
-        coin.price_check_ratio = coin.price_checked_at = coin.price_check_reason = None
-        return
+def check_price(db, coin, arkham_price, stamp):
     coin.price_check_status = coin.price_check_ratio = coin.price_checked_at = coin.price_check_reason = None
-    coin.chain_check_status = None
-    if coin.arkham_price_at is None and coin.arkham_chains is None:
-        return
-    if coin.arkham_chains is not None:
-        evidence = {d["chain"] for d in coin.deployments if d.get("chain")}
-        if evidence and coin.arkham_chains:
-            coin.chain_check_status = "ok" if {s.casefold() for s in evidence} & {
-                s.casefold() for s in coin.arkham_chains} else "mismatch"
     setting = db.get(CatalogSettings, "matching")
     if not setting or setting.price_tolerance_pct is None or setting.price_max_age_seconds is None:
         coin.price_check_reason = "price settings not configured"
@@ -276,12 +261,12 @@ def check_price(db, coin, stamp):
     payload = cache.payload if cache and cache.payload else {}
     price = payload.get("prices", {}).get(coin.symbol)
     fetched = payload.get("prices_at")
-    if price is None or coin.arkham_price is None or fetched is None:
+    if price is None or arkham_price is None or fetched is None:
         coin.price_check_status, coin.price_check_reason = "no_reference", "missing Binance or Arkham price"
     elif stamp - fetched > setting.price_max_age_seconds:
         coin.price_check_status, coin.price_check_reason = "stale", "Binance price is stale"
     else:
-        coin.price_check_ratio = coin.arkham_price / price
+        coin.price_check_ratio = arkham_price / price
         coin.price_check_status = "ok" if abs(coin.price_check_ratio - 1) * 100 <= setting.price_tolerance_pct else "mismatch"
 
 
@@ -427,15 +412,13 @@ class CoinCatalog:
             elif coin.match_status and deployment_keys(coin.deployments).isdisjoint(deployment_keys(candidate.deployments)):
                 coin.match_status = coin.match_reason = coin.automatic_pricing_id = None
                 coin.automatic_chains = []
-                coin.arkham_price = coin.arkham_price_at = coin.arkham_chains = None
                 coin.price_check_status = coin.price_check_ratio = coin.price_checked_at = coin.price_check_reason = None
-                coin.chain_check_status = None
                 coin.searched_deployments = []
             coin.symbol, coin.sources, coin.deployments = candidate.symbol, [candidate.feed], candidate.deployments
             coin.catalog_status, coin.catalog_reason = classify(candidate, snapshot, futures, policies, candidate.id in mapped_ids)
             sync_coin(db, coin)
             if candidate.id in mapped_ids:
-                coin.price_check_status = coin.chain_check_status = "manual"
+                coin.price_check_status = "manual"
         for coin in existing.values():
             coin.catalog_status, coin.catalog_reason = "unknown_onchain", "not in the validated Binance catalog"
             sync_coin(db, coin)
@@ -515,15 +498,13 @@ class CoinCatalog:
                     lambda payload: (search_matches(payload, address), payload))
                 with self.store.begin() as db:
                     current = db.get(Coin, coin.id)
-                    if current and current.match_status is None and (
+                    if current and current.status == "pending_match" and current.match_status is None and not db.get(CoinMapping, current.id) and (
                         deployment["chain"], normalize(address)
                     ) in deployment_keys(current.deployments):
                         if len(matches) == 1:
                             pricing_id, chains = next(iter(matches.items()))
                             current.automatic_pricing_id, current.automatic_chains = pricing_id, sorted(chains)
-                            current.arkham_price, current.arkham_chains = automatic_evidence(evidence, pricing_id)
-                            current.arkham_price_at = self.clock() if current.arkham_price is not None else None
-                            check_price(db, current, self.clock())
+                            check_price(db, current, automatic_price(evidence, pricing_id), self.clock())
                             current.match_status, current.match_reason = "pending_support", None
                             if deployment["feed"] == "alpha":
                                 for chain in chains:

@@ -270,7 +270,7 @@ def test_config_environment_and_migration(settings, tmp_path, monkeypatch):
         store = open_store(loaded.database)
         with store() as db:
             assert db.scalar(text("PRAGMA journal_mode")) == "wal"
-            assert db.scalar(text("PRAGMA user_version")) == 7
+            assert db.scalar(text("PRAGMA user_version")) == 8
         store.kw["bind"].dispose()
 
 
