@@ -53,6 +53,7 @@ struct AccountsView: View {
                 if let account = selected {
                     Button("Log In") { loggingIn = LoginRequest(account: account, page: .login) }
                     Button("Register") { loggingIn = LoginRequest(account: account, page: .register) }
+                    Button("Maintenance…") { loggingIn = LoginRequest(account: account, page: .maintenance) }
                     Button("Edit…") { editing = account }.disabled(account.managed != true)
                     Button(account.status == .paused ? "Resume" : "Pause") { action.run { try await setPaused(account) } }
                     Button("Delete…", role: .destructive) { confirmingDelete = true }.disabled(account.managed != true)

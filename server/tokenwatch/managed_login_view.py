@@ -16,22 +16,27 @@ HEADERS = {
 
 HTML = """<!doctype html>
 <html lang="en"><meta charset="utf-8"><title>Arkham browser</title>
-<style>html,body{height:100%;margin:0;overflow:hidden;background:#313131}body{display:flex;align-items:center;justify-content:center}img{display:block;cursor:crosshair}img[hidden]{display:none}#input{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;resize:none;overflow:hidden}</style>
-<img id="screen" tabindex="0" alt="Arkham browser viewport" hidden>
+<style>html,body{height:100%;margin:0;overflow:hidden;background:#313131}body{display:flex;flex-direction:column}#bar{display:flex;align-items:center;gap:8px;box-sizing:border-box;flex:none;height:36px;padding:4px 8px}#address{flex:1;min-width:0;box-sizing:border-box;height:28px;margin:0;padding:0 8px;border:1px solid #555;border-radius:4px;background:#252525;color:#eee;font:13px system-ui,sans-serif}#address-error{flex:none;max-width:50%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#ff8a80;font:12px system-ui,sans-serif}#stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center}img{display:block;cursor:crosshair}img[hidden]{display:none}#input{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;resize:none;overflow:hidden}</style>
+<div id="bar"><input id="address" type="text" inputmode="url" aria-label="Address" aria-describedby="address-error" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><span id="address-error" aria-live="polite"></span></div>
+<div id="stage"><img id="screen" tabindex="0" alt="Arkham browser viewport" hidden></div>
 <textarea id="input" tabindex="-1" aria-label="Browser keyboard input" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
 <script src="browser.js" defer></script></html>"""
 
 SCRIPT = r"""const screen = document.getElementById('screen');
 const input = document.getElementById('input');
+const address = document.getElementById('address');
+const addressError = document.getElementById('address-error');
+const stage = document.getElementById('stage');
 const KEYS = new Set(["Enter", "Tab", "Shift+Tab", "Backspace", "Delete", "Home", "End",
   "PageUp", "PageDown", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
 let imageURL, ended = false, busy = false;
+let committed = null, addressEdited = false, addressFocused = false, addressChain = Promise.resolve();
+let navigationRevision = 0;
 const pending = [];
 function fit() {
-  // Scale the viewport to the largest size that fits the page, keeping its aspect ratio.
+  // Scale the viewport to the largest size that fits the stage below the address field, keeping its aspect ratio.
   if (!screen.naturalWidth || !screen.naturalHeight) return;
-  const scale = Math.min(document.documentElement.clientWidth / screen.naturalWidth,
-    document.documentElement.clientHeight / screen.naturalHeight);
+  const scale = Math.min(stage.clientWidth / screen.naturalWidth, stage.clientHeight / screen.naturalHeight);
   screen.style.width = Math.floor(screen.naturalWidth * scale) + 'px';
   screen.style.height = Math.floor(screen.naturalHeight * scale) + 'px';
 }
@@ -48,8 +53,7 @@ async function refresh() {
       imageURL = url;
       fit();
     } else {
-      ended = reply.status === 404 || reply.status === 410;
-      if (ended) { pending.length = 0; input.value = ''; input.blur(); }
+      if (reply.status === 404 || reply.status === 410) end();
       screen.hidden = true;
     }
   } catch { screen.hidden = true; }
@@ -121,7 +125,89 @@ input.addEventListener('paste', event => {
   event.preventDefault();
   typeText(event.clipboardData ? event.clipboardData.getData('text/plain') : '');
 });
-refresh();"""
+const ADDRESS_LIMIT = 2048;
+const NAVIGATE_ERRORS = {409: 'Browser starting.', 422: 'Address not allowed.', 502: 'Browser unavailable.'};
+function end() {
+  ended = true;
+  pending.length = 0;
+  input.value = '';
+  input.blur();
+  showError('Browser closed.');
+}
+function showError(message) { addressError.textContent = message; }
+function normalizeAddress(raw) {
+  // Accepts http and https URLs and bare hostnames (sent as https). Credentials and other schemes are refused.
+  const text = raw.trim();
+  if (!text || text.length > ADDRESS_LIMIT || /[\s\p{Cc}]/u.test(text)) throw new Error('Enter a valid web address.');
+  const explicit = /^[a-z][a-z0-9+.-]*:\/\//i.test(text);
+  if (!explicit && /^[a-z][a-z0-9+.-]*:(?!\d)/i.test(text)) throw new Error('Only http and https addresses are allowed.');
+  if (!explicit && text.startsWith('/')) throw new Error('Enter a valid web address.');
+  let url;
+  try { url = new URL(explicit ? text : 'https://' + text); } catch { throw new Error('Enter a valid web address.'); }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Only http and https addresses are allowed.');
+  if (url.username || url.password) throw new Error('Addresses with credentials are not allowed.');
+  return url.href;
+}
+function applyCommitted() {
+  // The server's committed URL fills the field only while the user is neither focused on it nor has unsent edits.
+  if (committed === null || addressFocused || addressEdited) return;
+  address.value = committed;
+}
+async function syncLocation() {
+  if (ended) return;
+  const revision = navigationRevision;
+  try {
+    const reply = await fetch('location', {cache:'no-store'});
+    if (reply.status === 404 || reply.status === 410) { end(); return; }
+    if (!reply.ok) return;
+    const data = await reply.json();
+    if (revision !== navigationRevision) return;
+    if (typeof data.url === 'string' && data.url !== committed) {
+      committed = data.url;
+      applyCommitted();
+    }
+  } catch { /* the next poll retries */ }
+}
+async function trackLocation() {
+  await syncLocation();
+  if (!ended) setTimeout(trackLocation, 1000);
+}
+async function navigate(text, url) {
+  if (ended) return;
+  try {
+    const reply = await fetch('navigate', {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({url})});
+    if (reply.ok) {
+      const data = await reply.json();
+      if (ended) return;
+      navigationRevision++;
+      committed = data.url;
+      showError('');
+      if (address.value === text) { address.value = committed; addressEdited = false; }
+      return;
+    }
+    if (reply.status === 404 || reply.status === 410) { end(); return; }
+    showError(NAVIGATE_ERRORS[reply.status] || 'Address could not be opened.');
+  } catch { showError('Browser unavailable.'); }
+}
+function submitAddress() {
+  if (ended) { showError('Browser closed.'); return; }
+  const text = address.value;
+  let url;
+  try { url = normalizeAddress(text); } catch (error) { showError(error.message); return; }
+  // Navigations run one at a time, in the order they were submitted.
+  addressChain = addressChain.then(() => navigate(text, url));
+}
+address.addEventListener('focus', () => { addressFocused = true; });
+address.addEventListener('blur', () => { addressFocused = false; applyCommitted(); });
+address.addEventListener('input', () => { addressEdited = address.value !== committed; showError(''); });
+address.addEventListener('keydown', event => {
+  if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
+  event.preventDefault();
+  submitAddress();
+});
+refresh();
+trackLocation();"""
 
 KEYS = frozenset({"Enter", "Tab", "Shift+Tab", "Backspace", "Delete", "Home", "End",
                   "PageUp", "PageDown", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"})
