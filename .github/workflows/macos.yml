@@ -1,11 +1,6 @@
 name: macOS
 
 on:
-  push:
-    branches: [main]
-    paths: ['macos/**', '.github/workflows/macos.yml', 'server/openapi.json']
-  pull_request:
-    paths: ['macos/**', '.github/workflows/macos.yml', 'server/openapi.json']
   workflow_dispatch:
     inputs:
       upload_app:
