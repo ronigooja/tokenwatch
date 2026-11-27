@@ -16,19 +16,27 @@ HEADERS = {
 
 HTML = """<!doctype html>
 <html lang="en"><meta charset="utf-8"><title>Arkham browser</title>
-<style>body{font:14px system-ui;margin:8px}img{display:block;max-width:100%;margin-top:8px;cursor:crosshair}img[hidden]{display:none}#input{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;resize:none;overflow:hidden}</style>
-<p id="status" role="status">Opening browser…</p>
+<style>html,body{height:100%;margin:0;overflow:hidden;background:#313131}body{display:flex;align-items:center;justify-content:center}img{display:block;cursor:crosshair}img[hidden]{display:none}#input{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;resize:none;overflow:hidden}</style>
 <img id="screen" tabindex="0" alt="Arkham browser viewport" hidden>
 <textarea id="input" tabindex="-1" aria-label="Browser keyboard input" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
 <script src="browser.js" defer></script></html>"""
 
 SCRIPT = r"""const screen = document.getElementById('screen');
-const status = document.getElementById('status');
 const input = document.getElementById('input');
 const KEYS = new Set(["Enter", "Tab", "Shift+Tab", "Backspace", "Delete", "Home", "End",
   "PageUp", "PageDown", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
 let imageURL, ended = false, busy = false;
 const pending = [];
+function fit() {
+  // Scale the viewport to the largest size that fits the page, keeping its aspect ratio.
+  if (!screen.naturalWidth || !screen.naturalHeight) return;
+  const scale = Math.min(document.documentElement.clientWidth / screen.naturalWidth,
+    document.documentElement.clientHeight / screen.naturalHeight);
+  screen.style.width = Math.floor(screen.naturalWidth * scale) + 'px';
+  screen.style.height = Math.floor(screen.naturalHeight * scale) + 'px';
+}
+screen.addEventListener('load', fit);
+window.addEventListener('resize', fit);
 async function refresh() {
   try {
     const reply = await fetch('screen.png', {cache:'no-store'});
@@ -38,14 +46,13 @@ async function refresh() {
       screen.hidden = false;
       if (imageURL) URL.revokeObjectURL(imageURL);
       imageURL = url;
-      status.textContent = '';
+      fit();
     } else {
       ended = reply.status === 404 || reply.status === 410;
       if (ended) { pending.length = 0; input.value = ''; input.blur(); }
       screen.hidden = true;
-      status.textContent = ended ? 'Browser closed' : 'Waiting for browser…';
     }
-  } catch { screen.hidden = true; status.textContent = 'Browser unavailable'; }
+  } catch { screen.hidden = true; }
   if (!ended) setTimeout(refresh, 1000);
 }
 async function drain() {
@@ -55,8 +62,8 @@ async function drain() {
     try {
       const reply = await fetch('input', {method:'POST', headers:{'Content-Type':'application/json'},
         body:JSON.stringify(pending.shift())});
-      if (!reply.ok) { status.textContent = 'Input not accepted'; break; }
-    } catch { status.textContent = 'Browser unavailable'; break; }
+      if (!reply.ok) break;
+    } catch { break; }
   }
   pending.length = 0;
   busy = false;
@@ -101,7 +108,7 @@ function chunks(value) {
 }
 function typeText(value) {
   const parts = chunks(clean(value));
-  if (parts.length && !queue(parts.map(text => ({kind:'text', text}))) && !ended) status.textContent = 'Text not sent';
+  if (parts.length) queue(parts.map(text => ({kind:'text', text})));
 }
 function flushInput() {
   const value = input.value;
