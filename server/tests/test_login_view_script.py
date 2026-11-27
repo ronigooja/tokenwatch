@@ -47,7 +47,10 @@ async function open() {
     posts.push(JSON.parse(options.body));
     return {ok: true, status: 204};
   };
-  const URL = {createObjectURL: () => 'blob:x', revokeObjectURL() {}};
+  class URL extends globalThis.URL {
+    static createObjectURL() { return 'blob:x'; }
+    static revokeObjectURL() {}
+  }
   const api = new Function('document', 'fetch', 'URL', 'setTimeout', 'window',
     script + '\nreturn {refresh};')(document, fetch, URL, fn => timers.push(fn), window);
   await settle();
@@ -155,10 +158,11 @@ async function open() {
   out.serverErrorValue = bar.address.value;
   navigateStatus = 204;
 
-  bar.address.blur();
   locationURL = 'https://arkm.com/final';
+  const idle = await open();
+  locationURL = 'https://example.test/redirect';
   await tick();
-  out.followedCommitted = bar.address.value;
+  out.followedCommitted = idle.address.value;
 
   console.log(JSON.stringify(out));
 })().catch(error => { console.error(error); process.exit(1); });
@@ -239,7 +243,7 @@ def test_login_view_address_shows_committed_url_and_follows_it_when_idle():
     out = _run_script()
     assert out["committedShown"] == "https://arkm.com/start"
     assert out["addressPosts"] == []
-    assert out["followedCommitted"] == "https://arkm.com/final"
+    assert out["followedCommitted"] == "https://example.test/redirect"
 
 
 def test_login_view_address_keeps_unsent_edits_over_server_updates():
