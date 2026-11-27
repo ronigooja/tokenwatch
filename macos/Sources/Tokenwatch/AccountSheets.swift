@@ -137,7 +137,7 @@ struct LoginSheet: View {
             HStack {
                 Text("\(title): \(account.label)").font(.headline)
                 Spacer()
-                Button("Close") { dismiss() }
+                Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Done") { action.run { try await finish() } }.disabled(action.busy)
             }
             Group {
