@@ -100,6 +100,12 @@ class ManagerPage:
             raise ManagerError("invalid_response")
         return Response(result["status"], result["body"], result.get("retry_after"), result.get("cf_mitigated"))
 
+    async def fill_credentials(self, url, email, password):
+        result = await self.call("fill_credentials", url=url, email=email, password=password)
+        if not isinstance(result, dict) or type(result.get("filled")) is not bool:
+            raise ManagerError("invalid_response")
+        return result["filled"]
+
     async def png(self):
         result = await self.call("screenshot")
         try:

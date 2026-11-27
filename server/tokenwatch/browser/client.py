@@ -296,6 +296,7 @@ class BrowserUpstreamClient:
                 raise BadResponse("Browser pool is closed")
             session = ManagerPage(self._manager, self._config.manager_profiles[account_id],
                                   f"tokenwatch-login-{secrets.token_hex(16)}")
+            autofill = None
             try:
                 async with asyncio.timeout(self._config.request_timeout):
                     await session.open(LOGIN_URL if page == "login" else REGISTER_URL, persistent=False)
@@ -303,14 +304,29 @@ class BrowserUpstreamClient:
                 self._login_pages[account_id] = session
                 if ready:
                     ready()
+                account = self._accounts[account_id]
+                if page == "login" and account.email and account.password and self._autofill_timeout > 0:
+                    autofill = asyncio.create_task(self._manager_autofill(session, account.email, account.password))
                 while True:
                     await asyncio.sleep(1)
                     async with asyncio.timeout(self._config.close_timeout):
                         if (await session.info())["generation"] != generation:
                             return
             finally:
+                if autofill is not None:
+                    autofill.cancel()
+                    await asyncio.gather(autofill, return_exceptions=True)
                 self._login_pages.pop(account_id, None)
                 await self._close_manager_page(session)
+
+    async def _manager_autofill(self, session, email, password):
+        try:
+            async with asyncio.timeout(self._autofill_timeout):
+                while not await session.fill_credentials(LOGIN_URL, email, password):
+                    await asyncio.sleep(1)
+        except (Exception, asyncio.CancelledError):
+            # Autofill is best-effort; errors can contain credentials and must not be logged.
+            pass
 
     async def login_view(self, account_id, input_data=None):
         session = self._login_pages.get(account_id)
