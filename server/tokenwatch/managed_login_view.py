@@ -16,17 +16,17 @@ HEADERS = {
 
 HTML = """<!doctype html>
 <html lang="en"><meta charset="utf-8"><title>Arkham browser</title>
-<style>body{font:14px system-ui;margin:8px}img{display:block;max-width:100%;margin-top:8px;cursor:crosshair}img[hidden]{display:none}</style>
+<style>body{font:14px system-ui;margin:8px}img{display:block;max-width:100%;margin-top:8px;cursor:crosshair}img[hidden]{display:none}#input{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;resize:none;overflow:hidden}</style>
 <p id="status" role="status">Opening browser…</p>
-<label>Text to send <input id="text" type="password" autocomplete="off"></label>
-<button id="send" type="button">Send text</button>
-<p>Click the browser image to focus it. Use the text field to send typed or pasted text to the focused browser field.</p>
 <img id="screen" tabindex="0" alt="Arkham browser viewport" hidden>
+<textarea id="input" tabindex="-1" aria-label="Browser keyboard input" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
 <script src="browser.js" defer></script></html>"""
 
-SCRIPT = """const screen = document.getElementById('screen');
+SCRIPT = r"""const screen = document.getElementById('screen');
 const status = document.getElementById('status');
-const text = document.getElementById('text');
+const input = document.getElementById('input');
+const KEYS = new Set(["Enter", "Tab", "Shift+Tab", "Backspace", "Delete", "Home", "End",
+  "PageUp", "PageDown", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
 let imageURL, ended = false, busy = false;
 const pending = [];
 async function refresh() {
@@ -38,10 +38,10 @@ async function refresh() {
       screen.hidden = false;
       if (imageURL) URL.revokeObjectURL(imageURL);
       imageURL = url;
-      status.textContent = 'Browser open';
+      status.textContent = '';
     } else {
       ended = reply.status === 404 || reply.status === 410;
-      if (ended) { pending.length = 0; text.value = ''; }
+      if (ended) { pending.length = 0; input.value = ''; input.blur(); }
       screen.hidden = true;
       status.textContent = ended ? 'Browser closed' : 'Waiting for browser…';
     }
@@ -61,40 +61,58 @@ async function drain() {
   pending.length = 0;
   busy = false;
 }
-function send(data) {
-  if (ended || screen.hidden || pending.length >= 64) return false;
-  pending.push(data);
+function queue(items) {
+  if (ended || screen.hidden || pending.length + items.length > 64) return false;
+  pending.push(...items);
   drain();
   return true;
 }
 screen.addEventListener('click', event => {
   const box = screen.getBoundingClientRect();
   if (!screen.naturalWidth || !box.width || !box.height) return;
-  screen.focus({preventScroll:true});
-  send({kind:'click', x:Math.floor((event.clientX-box.left)*screen.naturalWidth/box.width),
-    y:Math.floor((event.clientY-box.top)*screen.naturalHeight/box.height)});
+  input.focus({preventScroll:true});
+  queue([{kind:'click', x:Math.floor((event.clientX-box.left)*screen.naturalWidth/box.width),
+    y:Math.floor((event.clientY-box.top)*screen.naturalHeight/box.height)}]);
 });
 screen.addEventListener('wheel', event => {
   event.preventDefault();
   const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 400 : 1;
   const clamp = n => Math.max(-1200, Math.min(1200, Math.round(n*scale)));
-  send({kind:'wheel', delta_x:clamp(event.deltaX), delta_y:clamp(event.deltaY)});
+  queue([{kind:'wheel', delta_x:clamp(event.deltaX), delta_y:clamp(event.deltaY)}]);
 }, {passive:false});
-screen.addEventListener('keydown', event => {
-  if (event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return;
-  if (event.key === 'Escape') { screen.blur(); return; }
+input.addEventListener('keydown', event => {
+  if (event.metaKey || event.ctrlKey || event.altKey || event.isComposing || event.keyCode === 229) return;
+  if (event.key === 'Escape') { input.blur(); return; }
   const key = event.shiftKey && event.key === 'Tab' ? 'Shift+Tab' : event.key;
-  const data = key.length === 1 ? {kind:'text',text:key} : {kind:'key',key};
-  event.preventDefault(); send(data);
+  if (!KEYS.has(key)) return;
+  event.preventDefault();
+  queue([{kind:'key', key}]);
 });
-function sendText() {
-  if (text.value && send({kind:'text',text:text.value})) {
-    text.value = ''; screen.focus();
+function clean(value) { return value.replace(/[\p{Cc}\p{Cs}]/gu, ''); }
+function chunks(value) {
+  const parts = [];
+  let part = '';
+  for (const char of value) {
+    if (part.length + char.length > 1024) { parts.push(part); part = ''; }
+    part += char;
   }
+  if (part) parts.push(part);
+  return parts;
 }
-document.getElementById('send').addEventListener('click', sendText);
-text.addEventListener('keydown', event => {
-  if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); sendText(); }
+function typeText(value) {
+  const parts = chunks(clean(value));
+  if (parts.length && !queue(parts.map(text => ({kind:'text', text}))) && !ended) status.textContent = 'Text not sent';
+}
+function flushInput() {
+  const value = input.value;
+  input.value = '';
+  typeText(value);
+}
+input.addEventListener('input', event => { if (!event.isComposing) flushInput(); });
+input.addEventListener('compositionend', flushInput);
+input.addEventListener('paste', event => {
+  event.preventDefault();
+  typeText(event.clipboardData ? event.clipboardData.getData('text/plain') : '');
 });
 refresh();"""
 
