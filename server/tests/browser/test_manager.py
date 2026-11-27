@@ -236,7 +236,7 @@ def test_login_autofill_retries_once_until_success_and_cancels(tmp_path):
         fills = [args for op, args in fake.calls if op == "fill_credentials"]
         assert len(fills) == 2
         assert all(args == {"profile_id": "profile1", "page_name": fills[0]["page_name"],
-                            "url": LOGIN_URL, "email": "a@example.test", "password": "saved"} for args in fills)
+                             "url": LOGIN_URL.partition("?")[0], "email": "a@example.test", "password": "saved"} for args in fills)
         assert fills[0]["page_name"].startswith("tokenwatch-login-")
         assert not fake.pages
     asyncio.run(run())

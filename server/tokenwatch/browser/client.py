@@ -322,7 +322,7 @@ class BrowserUpstreamClient:
     async def _manager_autofill(self, session, email, password):
         try:
             async with asyncio.timeout(self._autofill_timeout):
-                while not await session.fill_credentials(LOGIN_URL, email, password):
+                while not await session.fill_credentials(LOGIN_URL.partition("?")[0], email, password):
                     await asyncio.sleep(1)
         except (Exception, asyncio.CancelledError):
             # Autofill is best-effort; errors can contain credentials and must not be logged.
