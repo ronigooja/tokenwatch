@@ -11,7 +11,7 @@ Browser readiness and safe pre-fetch probing are described in [architecture.md](
 - Requests without a login session fail with `transfers.explorer denied at anonymous`.
 - Requests from server IPs outside a page context are blocked by Cloudflare; the page must pass Cloudflare first.
 - A human completes the interactive Cloudflare Turnstile on login.
-- The effect of automatic mouse clicks on the full-page Cloudflare interstitial has not been verified on the real site; see [startup behavior](architecture.md#components).
+- Browser Manager fetches are credentialed GETs, bound to the exact `https://arkm.com` page origin, with redirects disabled. Tokenwatch sends the same signed headers and does not retry a fetch on transport failure. See [startup behavior](architecture.md#components) for verification handling.
 - With the fingerprint-chromium Windows persona and canvas spoofing enabled, the Turnstile checkbox on the login page ends in "Verification failed" after a real mouse click. With `--disable-spoofing=canvas`, or with no persona, the click ends in "Success!". Chrome 148 and 150 behave the same. Observed with one blank profile per configuration and one run each, through a residential proxy.
 
 ## Endpoints
@@ -50,4 +50,4 @@ The server reads USD values from `historicalUSD` or `usdValue` if supplied; othe
 
 ## Interactive authentication pages
 
-Login: `https://arkm.com/login?redirectDomain=https://arkm.com`. Registration: `https://arkm.com/register?redirectDomain=https://arkm.com`. The registration page has `input#email[name=email][type=email]`, `input#password[name=password][type=password]`, and a “Sign Up” button. The login page DOM is not verified because a Cloudflare challenge can appear first. The browser uses `input[type=email], input[name=email]` and `input[type=password]` to fill saved credentials when visible; it never submits the form.
+Login: `https://arkm.com/login?redirectDomain=https://arkm.com`. Registration: `https://arkm.com/register?redirectDomain=https://arkm.com`. The registration page has `input#email[name=email][type=email]`, `input#password[name=password][type=password]`, and a “Sign Up” button. The login page DOM is not verified because a Cloudflare challenge can appear first. Local browser mode uses `input[type=email], input[name=email]` and `input[type=password]` to fill saved credentials when visible; it never submits the form. In Browser Manager mode, the operator enters credentials in the [ticket-scoped browser view](architecture.md#login-session).

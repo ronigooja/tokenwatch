@@ -9,6 +9,8 @@ from fastapi import HTTPException, Request, WebSocket
 from fastapi.responses import StreamingResponse
 from starlette.websockets import WebSocketDisconnect
 
+from . import managed_login_view
+
 
 class _RedactAccess(logging.Filter):
     def filter(self, record):
@@ -19,11 +21,14 @@ def install(app):
     # Uvicorn's access log otherwise contains the bearer-like path credential.
     for name in ("uvicorn.access", "uvicorn.error", "httpx"):
         logging.getLogger(name).addFilter(_RedactAccess())
+    managed_login_view.install(app)
 
     @app.get("/login-view/{ticket}/{asset:path}", include_in_schema=False)
     async def asset(ticket: str, asset: str, request: Request):
         if not app.state.logins.valid(ticket):
             raise HTTPException(404, "Not found")
+        if app.state.logins.manager_mode:
+            return await managed_login_view.asset(app.state.logins, ticket, asset)
         if any(part in ("..", ".") for part in asset.split("/")) or "\\" in asset:
             raise HTTPException(404, "Not found")
         url = app.state.settings.novnc_url.rstrip("/") + "/" + asset
@@ -51,7 +56,7 @@ def install(app):
 
     @app.websocket("/login-view/{ticket}/websockify")
     async def socket(websocket: WebSocket, ticket: str):
-        if not app.state.logins.valid(ticket):
+        if app.state.logins.manager_mode or not app.state.logins.valid(ticket):
             await websocket.close(code=1008)
             return
         session = app.state.logins.current

@@ -435,6 +435,8 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
     @app.post("/accounts", response_model=s.AccountOut, status_code=201, dependencies=auth, operation_id="create_accounts")
     async def create_account(body: s.AccountCreate, request: Request):
         client = request.app.state.upstream
+        if getattr(client, "manager_mode", False):
+            raise HTTPException(409, "Browser Manager accounts require operator provisioning")
         if not callable(getattr(client, "add_account", None)):
             raise HTTPException(503, "Browser pool unavailable")
         try:
@@ -479,6 +481,8 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
                 values = body.model_dump(exclude_unset=True)
                 if any(value is None for value in values.values()):
                     raise HTTPException(422, "Invalid account input")
+                if "proxy_url" in values and getattr(client, "manager_mode", False):
+                    raise HTTPException(409, "Browser Manager routes require operator changes")
                 getter = getattr(client, "account_config", None)
                 config, managed = getter(account_id) if getter else (None, False)
                 if {"proxy_url", "password"} & values.keys():
@@ -515,6 +519,8 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
         async with request.app.state.accounts_lock:
             with request.app.state.store.begin() as db:
                 row = find(db, Account, account_id)
+                if getattr(client, "manager_mode", False):
+                    raise HTTPException(409, "Browser Manager accounts require operator removal")
                 getter = getattr(client, "account_config", None)
                 _, managed = getter(account_id) if getter else (None, False)
                 if not managed or db.scalar(select(Job.id).where(Job.account_id == account_id).limit(1)) is not None:

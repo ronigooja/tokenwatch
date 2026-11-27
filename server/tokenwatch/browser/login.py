@@ -26,6 +26,8 @@ def main() -> None:
     args = parser.parse_args()
     try:
         config = BrowserConfig.from_toml(args.config, signing_key="login-only")
+        if config.manager_socket is not None:
+            raise ValueError("Use the authenticated Tokenwatch login view with Browser Manager")
         with suppress(KeyboardInterrupt, asyncio.CancelledError):
             asyncio.run(_login(config, args.account))
     except (ValueError, UpstreamError) as error:
