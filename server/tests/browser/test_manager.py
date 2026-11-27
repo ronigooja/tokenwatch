@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -13,6 +14,7 @@ from tokenwatch.api import create_app
 from tokenwatch.browser.client import BrowserUpstreamClient, _BrowserFailure, sign_payload
 from tokenwatch.browser.config import AccountConfig, BrowserConfig
 from tokenwatch.browser.manager import Manager
+from tokenwatch.browser.transport import LOGIN_URL
 from tokenwatch.config import Settings
 from tokenwatch.db import Account
 from tokenwatch.upstream import Blocked, RateLimited
@@ -40,6 +42,8 @@ class FakeManager:
         self.fetch_error = None
         self.delay_fetch = None
         self.fail_open = False
+        self.fill_results = [False]
+        self.fill_error = False
 
     async def __call__(self, request):
         assert request.method == "POST" and request.url.path == "/v1/project"
@@ -69,6 +73,10 @@ class FakeManager:
                       "cf_mitigated": None}
         if op == "screenshot":
             result = {"png": base64.b64encode(PNG).decode()}
+        if op == "fill_credentials":
+            if self.fill_error:
+                return httpx.Response(503, json={"error": {"code": "unavailable", "detail": "saved"}})
+            result = {"filled": self.fill_results.pop(0) if len(self.fill_results) > 1 else self.fill_results[0]}
         if op == "close":
             self.pages.pop(page, None)
         return httpx.Response(200, json={"result": result})
@@ -206,6 +214,84 @@ def test_ticket_scoped_login_finish_and_account_mutations(tmp_path):
     assert not any(op == "fill" for op, _ in fake.calls)
     assert [args["page_name"] for op, args in fake.calls if op == "fetch"] == ["tokenwatch-automation"]
     assert any(op == "close" and args["page_name"] == login_page for op, args in fake.calls)
+
+
+def test_login_autofill_retries_once_until_success_and_cancels(tmp_path):
+    fake = FakeManager()
+    fake.fill_results = [False, True]
+
+    async def run():
+        async with fake.client(config(tmp_path)) as client:
+            client._autofill_timeout = 5
+            ready = asyncio.Event()
+            task = asyncio.create_task(client.manual_login("a", ready=ready.set))
+            await asyncio.wait_for(ready.wait(), 1)
+            async with asyncio.timeout(3):
+                while len([1 for op, _ in fake.calls if op == "fill_credentials"]) < 2:
+                    await asyncio.sleep(0.01)
+            await asyncio.sleep(1.1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        fills = [args for op, args in fake.calls if op == "fill_credentials"]
+        assert len(fills) == 2
+        assert all(args == {"profile_id": "profile1", "page_name": fills[0]["page_name"],
+                            "url": LOGIN_URL, "email": "a@example.test", "password": "saved"} for args in fills)
+        assert fills[0]["page_name"].startswith("tokenwatch-login-")
+        assert not fake.pages
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("case", ["register", "missing_email", "missing_password", "failure"])
+def test_login_autofill_skips_or_fails_without_closing(tmp_path, caplog, case):
+    fake = FakeManager()
+    fake.fill_error = case == "failure"
+    cfg = config(tmp_path)
+    if case == "missing_email":
+        cfg = replace(cfg, accounts=(replace(cfg.accounts[0], email=None),))
+    if case == "missing_password":
+        cfg = replace(cfg, accounts=(replace(cfg.accounts[0], password=None),))
+
+    async def run():
+        async with fake.client(cfg) as client:
+            ready = asyncio.Event()
+            task = asyncio.create_task(client.manual_login("a", ready=ready.set,
+                                                          page="register" if case == "register" else "login"))
+            await asyncio.wait_for(ready.wait(), 1)
+            await asyncio.sleep(0.05)
+            assert not task.done() and fake.pages
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert not fake.pages
+    asyncio.run(run())
+    assert len([1 for op, _ in fake.calls if op == "fill_credentials"]) == (1 if case == "failure" else 0)
+    assert "saved" not in caplog.text and "a@example.test" not in caplog.text
+
+
+@pytest.mark.parametrize("end", ["timeout", "cancel"])
+def test_autofill_stops_on_deadline_or_session_close(tmp_path, end):
+    fake = FakeManager()
+
+    async def run():
+        async with fake.client(config(tmp_path)) as client:
+            client._autofill_timeout = 0.08 if end == "timeout" else 5
+            ready = asyncio.Event()
+            task = asyncio.create_task(client.manual_login("a", ready=ready.set))
+            await asyncio.wait_for(ready.wait(), 1)
+            await asyncio.sleep(0.12)
+            if end == "cancel":
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            await asyncio.sleep(1.05)
+            assert len([1 for op, _ in fake.calls if op == "fill_credentials"]) == 1
+            if end == "timeout":
+                assert not task.done()
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("end", ["cancel", "timeout", "launch_failure"])
