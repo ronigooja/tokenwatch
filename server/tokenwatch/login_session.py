@@ -59,7 +59,7 @@ class LoginSessions:
                     raise HTTPException(404, "Resource not found")
                 if self.current:
                     raise HTTPException(409, "Login session already exists")
-                if ((not self.manager_mode and not self.settings.novnc_url)
+                if (not self.settings.login_enabled or (not self.manager_mode and not self.settings.novnc_url)
                         or not callable(getattr(self.upstream, "manual_login", None))):
                     raise HTTPException(503, "Login unavailable")
                 session = Login(account_id, secrets.token_urlsafe(32), (account.status, account.pause_reason), page)

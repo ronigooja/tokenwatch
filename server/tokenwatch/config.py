@@ -26,6 +26,7 @@ class Settings(BaseModel):
     account_status_ttl: float = Field(default=600, gt=0)
     novnc_url: str = ""
     vnc_password: SecretStr | None = None
+    login_enabled: bool = True
     login_timeout: float = Field(default=900, gt=0)
     shutdown_grace_seconds: float = Field(default=30, ge=0)
 

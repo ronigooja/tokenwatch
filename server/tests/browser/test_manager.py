@@ -233,6 +233,21 @@ def test_login_termination_closes_page_and_revokes_ticket_without_fetch(tmp_path
     assert not any(op == "fetch" for op, _ in fake.calls)
 
 
+def test_disabled_login_does_not_issue_ticket_or_pause_account(tmp_path):
+    fake = FakeManager()
+    settings = Settings(database=tmp_path / "test.db", bearer_token="token", signing_key="key", login_enabled=False)
+    app = create_app(settings, fake.client(config(tmp_path)), run_scheduler=False)
+    with TestClient(app, headers={"Authorization": "Bearer token"}) as client:
+        with app.state.store.begin() as db:
+            db.add(Account(id="a", proxy_ref="p", status="active"))
+        response = client.post("/accounts/a/login")
+        assert response.status_code == 503
+        assert client.get("/accounts/a/login").json() == {"state": "none", "path": None}
+        with app.state.store() as db:
+            assert db.get(Account, "a").status == "active"
+    assert not fake.calls
+
+
 def test_real_http_envelope_over_unix_socket(tmp_path):
     path = tmp_path / "project.sock"
 
