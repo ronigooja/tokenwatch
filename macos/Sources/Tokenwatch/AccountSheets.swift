@@ -105,7 +105,9 @@ struct LoginSheet: View {
     @State private var phase: AccountLogin.Phase?
     @State private var path: String?
     @State private var started = false
-    @State private var finished = false
+    @State private var startRequest: Task<AccountLogin, Error>?
+    @State private var resolved = false  // Done or dismissal has claimed the login; only one may finalize or cancel it
+    @State private var gone = false      // the sheet has disappeared
     @State private var note: String?
     @State private var action = ActionState()
 
@@ -135,7 +137,7 @@ struct LoginSheet: View {
             HStack {
                 Text("\(title): \(account.label)").font(.headline)
                 Spacer()
-                Button("Close") { action.run { try await cancel() } }.disabled(action.busy)
+                Button("Close") { dismiss() }
                 Button("Done") { action.run { try await finish() } }.disabled(action.busy)
             }
             Group {
@@ -154,9 +156,8 @@ struct LoginSheet: View {
                 Spacer()
             }
         }.padding().frame(width: 960, height: 680)
-            .interactiveDismissDisabled(action.busy)
             .task {
-                await action.load { try await start() }
+                if !resolved { await action.load { try await start() } }
                 while started, !Task.isCancelled, phase == .starting {
                     try? await Task.sleep(for: .seconds(2))
                     guard !Task.isCancelled else { return }
@@ -164,16 +165,16 @@ struct LoginSheet: View {
                 }
             }
             .onDisappear {
-                guard started, !finished else { return }
-                Task {
-                    do { onFinish(.success(try await client.finishAccountLogin(account.id).status)) }
-                    catch { onFinish(.failure(error)) }
-                }
+                gone = true
+                release()
             }
     }
 
     private func start() async throws {
-        let login = try await client.startAccountLogin(account.id, page: page)
+        // Unstructured so that dismissing the sheet does not cancel the request; its result is needed to cancel the login.
+        let request = Task { try await client.startAccountLogin(account.id, page: page) }
+        startRequest = request
+        let login = try await request.value
         started = true
         phase = login.state
         path = login.path
@@ -190,26 +191,50 @@ struct LoginSheet: View {
         }
     }
 
-    private func cancel() async throws {
-        guard started else {
-            dismiss()
-            return
+    /// Close, Esc, and system dismissal end here. Never finalizes the login; only Done does.
+    /// Does nothing if Done already claimed the login, so a cancel never runs concurrently with Done.
+    private func release() {
+        guard !resolved else { return }
+        resolved = true
+        cancelStartedLogin()
+    }
+
+    /// Best effort, in the background so the sheet never waits on it.
+    /// Cancels only if the start request succeeded; a failed start leaves no login to cancel.
+    private func cancelStartedLogin() {
+        guard let start = startRequest else { return }
+        let client = self.client, accountID = self.account.id, report = self.onFinish
+        Task {
+            guard (try? await start.value) != nil else { return }
+            do {
+                _ = try await client.cancelAccountLogin(accountID)
+                report(.success(nil))
+            } catch {
+                report(.failure(error))
+            }
         }
-        _ = try await client.cancelAccountLogin(account.id)
-        finished = true
-        onFinish(.success(nil))
-        dismiss()
     }
 
     private func finish() async throws {
-        guard started else {
+        guard started, !resolved else {
             dismiss()
             return
         }
-        let status = try await client.finishAccountLogin(account.id).status
-        finished = true
-        onFinish(.success(status))
-        dismiss()
+        resolved = true
+        do {
+            let status = try await client.finishAccountLogin(account.id).status
+            onFinish(.success(status))
+            dismiss()
+        } catch {
+            if gone {
+                // Done ran after the sheet closed, so nothing is shown. Report the error and cancel once.
+                onFinish(.failure(error))
+                cancelStartedLogin()
+                return
+            }
+            resolved = false  // the sheet is still open: allow retrying Done or Close
+            throw error
+        }
     }
 }
 
