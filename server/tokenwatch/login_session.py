@@ -32,9 +32,15 @@ class LoginSessions:
 
     def valid(self, ticket):
         session = self.current
-        return bool(session and session.ticket and secrets.compare_digest(session.ticket, ticket))
+        return bool(session and session.ticket and ticket.isascii() and secrets.compare_digest(session.ticket, ticket))
+
+    @property
+    def manager_mode(self):
+        return getattr(self.upstream, "manager_mode", False)
 
     def path(self, session):
+        if self.manager_mode:
+            return f"/login-view/{session.ticket}/browser.html"
         query = {"autoconnect": "true", "resize": "scale", "path": f"login-view/{session.ticket}/websockify"}
         if self.settings.vnc_password:
             query["password"] = self.settings.vnc_password.get_secret_value()
@@ -53,14 +59,16 @@ class LoginSessions:
                     raise HTTPException(404, "Resource not found")
                 if self.current:
                     raise HTTPException(409, "Login session already exists")
-                if not self.settings.novnc_url or not callable(getattr(self.upstream, "manual_login", None)):
+                if ((not self.manager_mode and not self.settings.novnc_url)
+                        or not callable(getattr(self.upstream, "manual_login", None))):
                     raise HTTPException(503, "Login unavailable")
                 session = Login(account_id, secrets.token_urlsafe(32), (account.status, account.pause_reason), page)
                 account.status, account.pause_reason = "paused", "login"
             self.notify_account(account_id)
             self.current = session
             self.history.pop(account_id, None)
-            await asyncio.to_thread(clear_caps_lock)
+            if not self.manager_mode:
+                await asyncio.to_thread(clear_caps_lock)
             session.task = asyncio.create_task(self._run(session))
             session.timer = asyncio.create_task(self._timeout(session))
             return {"state": "starting", "path": self.path(session)}

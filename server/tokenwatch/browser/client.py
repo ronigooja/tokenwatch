@@ -1,11 +1,11 @@
 import asyncio
-from collections.abc import Callable
 import hashlib
 import json
 import math
 import logging
 import os
 import re
+import secrets
 import time
 import unicodedata
 from collections.abc import Awaitable, Callable
@@ -18,9 +18,10 @@ from urllib.parse import urlencode
 from ..upstream import (AuthRequired, BadResponse, Blocked, RateLimited, RequestRejected,
                         TOKEN_ADDRESSES_PREFIX, UNSUPPORTED_TOKEN)
 from .config import AccountConfig, BrowserConfig, write_accounts
+from .manager import Manager, ManagerError, ManagerPage
 from .transport import (
-    API_ORIGIN, BrowserSession, Forward, Forwarder, Launcher, PlaywrightLauncher,
-    PProxyForwarder, Response,
+    API_ORIGIN, LOGIN_URL, REGISTER_URL, SITE_URL, BrowserSession, Forward, Forwarder,
+    Launcher, PlaywrightLauncher, PProxyForwarder, Response,
 )
 
 T = TypeVar("T")
@@ -152,8 +153,8 @@ async def _through(forward: Forward, action: Callable[[], Awaitable[T]], diagnos
 
 @dataclass(slots=True)
 class _Instance:
-    session: BrowserSession
-    forward: Forward
+    session: BrowserSession | ManagerPage
+    forward: Forward | None = None
     idle: asyncio.TimerHandle | None = None
     watcher: asyncio.Task | None = None
 
@@ -162,10 +163,13 @@ class BrowserUpstreamClient:
     def __init__(
         self, config: BrowserConfig, *, launcher: Launcher | None = None,
         forwarder: Forwarder | None = None, clock: Callable[[], float] = time.time, autofill_timeout: float = 60,
+        manager: Manager | None = None,
     ) -> None:
         self._config = config
         self._launcher = launcher if launcher is not None else PlaywrightLauncher()
         self._forwarder = forwarder if forwarder is not None else PProxyForwarder()
+        self._manager = (manager if manager is not None else Manager(config.manager_socket)) if config.manager_socket else None
+        self._login_pages: dict[str, ManagerPage] = {}
         self._clock = clock
         self._autofill_timeout = autofill_timeout
         self._accounts = {account.id: account for account in config.accounts}
@@ -237,14 +241,24 @@ class BrowserUpstreamClient:
         try:
             async with timeout:
                 async with self._lease(account_id, deadline=timeout) as instance:
-                    now = self._clock()
-                    timestamp = int(now)
+                    if instance.forward is None:
+                        try:
+                            await instance.session.check_site()
+                        except ManagerError as error:
+                            raise _BrowserFailure(f"Browser Manager: {error.code}") from None
+                    timestamp = int(self._clock())
                     headers = {
                         "X-Timestamp": str(timestamp),
                         "X-Payload": sign_payload(path, timestamp, self._config.signing_key),
                     }
-                    response = await _through(instance.forward, lambda: instance.session.fetch(url, headers),
-                                              getattr(instance.session, "failure_context", None))
+                    if instance.forward is None:
+                        try:
+                            response = await instance.session.fetch(url, headers)
+                        except ManagerError as error:
+                            raise _BrowserFailure(f"Browser Manager: {error.code}") from None
+                    else:
+                        response = await _through(instance.forward, lambda: instance.session.fetch(url, headers),
+                                                   getattr(instance.session, "failure_context", None))
                     return _decode(response, self._clock(), path)
         except TimeoutError:
             if not timeout.expired():
@@ -261,6 +275,9 @@ class BrowserUpstreamClient:
             return "unknown"
 
     async def manual_login(self, account_id: str, *, ready: Callable[[], None] | None = None, page: str = "login") -> None:
+        if self._manager is not None:
+            await self._manager_login(account_id, ready, page)
+            return
         async with self._lease(account_id, interactive=True) as instance:
             if ready:
                 ready()
@@ -269,11 +286,55 @@ class BrowserUpstreamClient:
                 page, account.email, account.password, self._autofill_timeout))
             await _through(instance.forward, instance.session.wait_closed)
 
+    @property
+    def manager_mode(self) -> bool:
+        return self._manager is not None
+
+    async def _manager_login(self, account_id, ready, page):
+        async with self._locks[account_id]:
+            if self._closed:
+                raise BadResponse("Browser pool is closed")
+            session = ManagerPage(self._manager, self._config.manager_profiles[account_id],
+                                  f"tokenwatch-login-{secrets.token_hex(16)}")
+            try:
+                async with asyncio.timeout(self._config.request_timeout):
+                    await session.open(LOGIN_URL if page == "login" else REGISTER_URL, persistent=False)
+                    generation = (await session.info())["generation"]
+                self._login_pages[account_id] = session
+                if ready:
+                    ready()
+                while True:
+                    await asyncio.sleep(1)
+                    async with asyncio.timeout(self._config.close_timeout):
+                        if (await session.info())["generation"] != generation:
+                            return
+            finally:
+                self._login_pages.pop(account_id, None)
+                await self._close_manager_page(session)
+
+    async def login_view(self, account_id, input_data=None):
+        session = self._login_pages.get(account_id)
+        if session is None:
+            raise ManagerError("not_found")
+        async with asyncio.timeout(self._config.close_timeout):
+            if input_data is None:
+                return await session.png()
+            await session.call("input", **input_data)
+
+    async def _close_manager_page(self, session):
+        try:
+            async with asyncio.timeout(self._config.close_timeout):
+                await session.close()
+        except (ManagerError, TimeoutError):
+            logger.warning("Browser Manager page close failed")
+
     def account_config(self, account_id: str):
         account = self._accounts.get(account_id)
         return (account, account_id in self._managed_ids) if account else (None, False)
 
     async def add_account(self, account: AccountConfig) -> None:
+        if self.manager_mode:
+            raise ValueError("Browser Manager accounts require operator provisioning")
         async with self._changed:
             if self._closed or self._config.accounts_file is None:
                 raise BadResponse("Browser pool unavailable")
@@ -286,6 +347,8 @@ class BrowserUpstreamClient:
             self._changed.notify_all()
 
     async def remove_account(self, account_id: str) -> None:
+        if self.manager_mode:
+            raise ValueError("Browser Manager accounts require operator removal")
         lock = self._locks[account_id]
         async with lock, self._changed:
             if account_id not in self._managed_ids or self._config.accounts_file is None:
@@ -303,6 +366,8 @@ class BrowserUpstreamClient:
         async with self._locks[account.id], self._changed:
             if self._closed or account.id not in self._managed_ids or self._config.accounts_file is None:
                 raise BadResponse("Browser pool unavailable")
+            if self.manager_mode and account.proxy_url != self._accounts[account.id].proxy_url:
+                raise ValueError("Browser Manager routes require operator changes")
             write_accounts(self._config.accounts_file, [account if key == account.id else self._accounts[key]
                                                         for key in sorted(self._managed_ids)])
             if instance := self._instances.get(account.id):
@@ -312,6 +377,17 @@ class BrowserUpstreamClient:
             self._changed.notify_all()
 
     async def _start(self, account: AccountConfig, interactive: bool) -> _Instance:
+        if self._manager is not None:
+            page = ManagerPage(self._manager, self._config.manager_profiles[account.id], "tokenwatch-automation")
+            try:
+                await page.open(SITE_URL)
+            except ManagerError as error:
+                await self._close_manager_page(page)
+                raise _BrowserFailure(f"Browser Manager: {error.code}") from None
+            except asyncio.CancelledError:
+                await self._close_manager_page(page)
+                raise
+            return _Instance(page)
         try:
             forward = await self._forwarder.start(account)
         except Exception:
@@ -474,10 +550,13 @@ class BrowserUpstreamClient:
             instance.idle.cancel()
         if instance.watcher is not None and instance.watcher is not asyncio.current_task():
             instance.watcher.cancel()
-        if not instance.forward.alive:
+        if instance.forward is not None and not instance.forward.alive:
             self._failed_proxies.add(account_id)
         try:
-            await self._shutdown(account_id, instance.session, instance.forward)
+            if instance.forward is None:
+                await self._close_manager_page(instance.session)
+            else:
+                await self._shutdown(account_id, instance.session, instance.forward)
         finally:
             self._changed.notify_all()
 
@@ -512,7 +591,7 @@ class BrowserUpstreamClient:
                     if instance is not None:
                         if deadline is not None:
                             deadline.reschedule(asyncio.get_running_loop().time() + self._config.request_timeout)
-                        if not instance.forward.alive:
+                        if instance.forward is not None and not instance.forward.alive:
                             exc = Blocked("Local proxy stopped", cause="forwarder_stopped")
                             await self._blocked_capture(account_id, instance.session, exc)
                             await self._drop(account_id, instance)
@@ -549,7 +628,8 @@ class BrowserUpstreamClient:
                             self._starting -= 1
                         if instance is not None:
                             self._instances[account_id] = instance
-                            instance.watcher = asyncio.create_task(self._watch(account_id, instance))
+                            if instance.forward is not None:
+                                instance.watcher = asyncio.create_task(self._watch(account_id, instance))
                         self._changed.notify_all()
             discard = False
             try:
@@ -569,7 +649,7 @@ class BrowserUpstreamClient:
             finally:
                 async with self._changed:
                     self._interactive.discard(account_id)
-                    if discard or self._closed or not instance.forward.alive:
+                    if discard or self._closed or (instance.forward is not None and not instance.forward.alive):
                         await self._drop(account_id, instance)
                     else:
                         loop = asyncio.get_running_loop()
@@ -590,3 +670,5 @@ class BrowserUpstreamClient:
                 instance = self._instances.get(account_id)
                 if instance is not None:
                     await self._drop(account_id, instance)
+        if self._manager is not None:
+            await self._manager.close()

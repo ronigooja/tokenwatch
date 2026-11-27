@@ -1,5 +1,8 @@
 # Copy to browser.local.toml (git-ignored). Paths are relative to that file unless absolute.
 # The signing key comes from the server settings, not from this file.
+# For Browser Manager mode, set manager_socket and map each account to a distinct
+# operator-provisioned profile in [manager_profiles]. Local binary and profile paths are then optional.
+# manager_socket = "/run/browser-manager/project.sock"
 binary_path = "/path/to/fingerprint-chromium"
 profiles_root = "profiles"
 accounts_file = "accounts.local.toml"
@@ -19,6 +22,9 @@ page_settle_seconds = 15
 # Optional private screenshots; set both in browser.local.toml, outside the repository.
 # blocked_screenshot_dir = "/var/lib/tokenwatch/blocked-screenshots"
 # blocked_screenshot_keep = 10
+
+# [manager_profiles]
+# "account-example" = "operator-provisioned-profile"
 
 [[accounts]]
 id = "account-example"

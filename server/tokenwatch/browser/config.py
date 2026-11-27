@@ -61,8 +61,8 @@ class AccountConfig:
 
 @dataclass(frozen=True, slots=True)
 class BrowserConfig:
-    binary_path: Path
-    profiles_root: Path
+    binary_path: Path | None
+    profiles_root: Path | None
     signing_key: str = field(repr=False)
     accounts: tuple[AccountConfig, ...]
     request_timeout: float
@@ -79,6 +79,8 @@ class BrowserConfig:
     managed_ids: frozenset[str] = frozenset()
     blocked_screenshot_dir: Path | None = None
     blocked_screenshot_keep: int | None = None
+    manager_socket: Path | None = None
+    manager_profiles: dict[str, str] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         if type(self.close_timeout) not in (int, float) or not math.isfinite(self.close_timeout) or self.close_timeout <= 0:
@@ -109,6 +111,15 @@ class BrowserConfig:
             raise ValueError("page_settle_seconds must be nonnegative and finite")
         if len({account.id.casefold() for account in self.accounts}) != len(self.accounts):
             raise ValueError("Duplicate browser account ID")
+        if self.manager_socket is not None:
+            profiles = self.manager_profiles
+            if (not isinstance(profiles, dict) or set(profiles) != {a.id for a in self.accounts}
+                    or any(not isinstance(value, str) or not value.strip() for value in profiles.values())
+                    or len(set(profiles.values())) != len(profiles)):
+                raise ValueError("manager_profiles must map each account to a distinct Browser Manager profile")
+            object.__setattr__(self, "manager_profiles", profiles.copy())
+        elif self.manager_profiles or self.binary_path is None or self.profiles_root is None:
+            raise ValueError("Local browser mode requires binary_path and profiles_root and no manager_profiles")
 
     @classmethod
     def from_toml(cls, path: Path, signing_key: str | None = None) -> "BrowserConfig":
@@ -121,8 +132,12 @@ class BrowserConfig:
                 raise ValueError("close_timeout is required and must be positive and finite")
             if signing_key is not None:
                 data["signing_key"] = signing_key
-            for name in ("binary_path", "profiles_root"):
-                data[name] = path.parent / Path(data[name]).expanduser()
+            for name in ("binary_path", "profiles_root", "manager_socket"):
+                if name in data:
+                    data[name] = path.parent / Path(data[name]).expanduser()
+            if "manager_socket" in data:
+                data.setdefault("binary_path", None)
+                data.setdefault("profiles_root", None)
             if "blocked_screenshot_dir" in data:
                 data["blocked_screenshot_dir"] = path.parent / Path(data["blocked_screenshot_dir"]).expanduser()
             accounts_file = path.parent / Path(data.pop("accounts_file", "accounts.local.toml")).expanduser()
@@ -135,7 +150,7 @@ class BrowserConfig:
             data["managed_ids"] = frozenset(account["id"] for account in managed)
             return cls(**data)
         except ValueError as error:
-            if any(key in str(error) for key in ("blocked_screenshot_keep", "request_timeout", "close_timeout", "cf_click")):
+            if any(key in str(error) for key in ("blocked_screenshot_keep", "request_timeout", "close_timeout", "cf_click", "manager_profiles")):
                 raise
         except (OSError, KeyError, TypeError, OverflowError):
             pass
