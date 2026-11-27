@@ -111,7 +111,13 @@ struct LoginSheet: View {
     @State private var note: String?
     @State private var action = ActionState()
 
-    private var title: String { page == .register ? "Register" : "Log In" }
+    private var title: String {
+        switch page {
+        case .login: return "Log In"
+        case .register: return "Register"
+        case .maintenance: return "Maintenance"
+        }
+    }
 
     private var loginURL: URL? {
         guard let path, path.hasPrefix("/"), !path.hasPrefix("//") else { return nil }
@@ -124,9 +130,11 @@ struct LoginSheet: View {
         switch phase {
         case nil, .starting?: return "Starting…"
         case .open?:
-            return page == .register
-                ? "Open. Complete registration in the window, then press Done."
-                : "Open. Complete the verification and submit in the window, then press Done."
+            switch page {
+            case .login: return "Open. Complete the verification and submit in the window, then press Done."
+            case .register: return "Open. Complete registration in the window, then press Done."
+            case .maintenance: return "Open. Complete the maintenance in the window, then press Done."
+            }
         case .closed?, .none?: return "The window was closed. Press Done to check the session."
         case .failed?: return "Failed to open the window."
         }

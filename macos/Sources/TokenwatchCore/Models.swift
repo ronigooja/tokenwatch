@@ -340,7 +340,7 @@ public struct AccountUpdate: Encodable, Sendable {
     }
 }
 
-public enum LoginPage: String, Codable, Sendable, CaseIterable { case login, register }
+public enum LoginPage: String, Codable, Sendable, CaseIterable { case login, register, maintenance }
 
 public struct AccountLogin: Codable, Sendable {
     public enum Phase: String, Codable, Sendable { case none, starting, open, closed, failed }
