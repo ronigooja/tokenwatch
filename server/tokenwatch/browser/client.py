@@ -170,6 +170,7 @@ class BrowserUpstreamClient:
         self._forwarder = forwarder if forwarder is not None else PProxyForwarder()
         self._manager = (manager if manager is not None else Manager(config.manager_socket)) if config.manager_socket else None
         self._login_pages: dict[str, ManagerPage] = {}
+        self._login_autofill: dict[str, asyncio.Task] = {}
         self._clock = clock
         self._autofill_timeout = autofill_timeout
         self._accounts = {account.id: account for account in config.accounts}
@@ -299,7 +300,8 @@ class BrowserUpstreamClient:
             autofill = None
             try:
                 async with asyncio.timeout(self._config.request_timeout):
-                    await session.open(LOGIN_URL if page == "login" else REGISTER_URL, persistent=False)
+                    url = {"login": LOGIN_URL, "register": REGISTER_URL, "maintenance": SITE_URL}[page]
+                    await session.open(url, persistent=False)
                     generation = (await session.info())["generation"]
                 self._login_pages[account_id] = session
                 if ready:
@@ -307,6 +309,7 @@ class BrowserUpstreamClient:
                 account = self._accounts[account_id]
                 if page == "login" and account.email and account.password and self._autofill_timeout > 0:
                     autofill = asyncio.create_task(self._manager_autofill(session, account.email, account.password))
+                    self._login_autofill[account_id] = autofill
                 while True:
                     await asyncio.sleep(1)
                     async with asyncio.timeout(self._config.close_timeout):
@@ -316,6 +319,7 @@ class BrowserUpstreamClient:
                 if autofill is not None:
                     autofill.cancel()
                     await asyncio.gather(autofill, return_exceptions=True)
+                    self._login_autofill.pop(account_id, None)
                 self._login_pages.pop(account_id, None)
                 await self._close_manager_page(session)
 

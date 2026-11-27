@@ -81,6 +81,15 @@ def wait_state(client, state):
     pytest.fail(f"state did not become {state}: {result}")
 
 
+def test_maintenance_rejected_in_local_mode(setup):
+    client, app, fake = setup
+    response = client.post("/accounts/a/login", json={"page": "maintenance"})
+    assert response.status_code == 503
+    assert app.state.logins.current is None
+    with app.state.store() as db:
+        assert db.get(Account, "a").pause_reason != "login"
+
+
 def test_start_finish_ticket_and_single_probe(setup, caplog):
     client, app, fake = setup
     caplog.set_level(logging.DEBUG)

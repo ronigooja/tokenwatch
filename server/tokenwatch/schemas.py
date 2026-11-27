@@ -170,7 +170,7 @@ class LoginSession(Schema):
 
 
 class LoginInput(Schema):
-    page: Literal["login", "register"] = "login"
+    page: Literal["login", "register", "maintenance"] = "login"
 
 
 class ExclusionInput(Schema):

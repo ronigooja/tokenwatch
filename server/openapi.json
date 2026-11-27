@@ -3910,7 +3910,8 @@
             "type": "string",
             "enum": [
               "login",
-              "register"
+              "register",
+              "maintenance"
             ],
             "title": "Page",
             "default": "login"

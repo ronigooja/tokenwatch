@@ -62,6 +62,8 @@ class LoginSessions:
                 if (not self.settings.login_enabled or (not self.manager_mode and not self.settings.novnc_url)
                         or not callable(getattr(self.upstream, "manual_login", None))):
                     raise HTTPException(503, "Login unavailable")
+                if page == "maintenance" and not self.manager_mode:
+                    raise HTTPException(503, "Maintenance unavailable")
                 session = Login(account_id, secrets.token_urlsafe(32), (account.status, account.pause_reason), page)
                 account.status, account.pause_reason = "paused", "login"
             self.notify_account(account_id)

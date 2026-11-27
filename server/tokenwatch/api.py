@@ -24,7 +24,7 @@ from .hub import Hub
 from .collectors import Collectors, snapshot_diff
 from .config import load_settings
 from .login_session import LoginSessions
-from . import novnc
+from . import novnc, managed_login_navigation
 from .db import (Account, CatalogCache, CatalogExclusion, CatalogSettings, ChainObservation, Coin, CoinMapping, DailyBalance,
                  DailyCollection, Event, Exclusion, FuturesMapping, Job, PushLog, Rule, Snapshot,
                  SnapshotRow, Subscription, Transfer, TransferCoin, now, open_store)
@@ -218,6 +218,7 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
 
     app = FastAPI(title="Tokenwatch", version="0.1.0", lifespan=lifespan)
     auth = [Depends(authorize)]
+    managed_login_navigation.install(app)
     novnc.install(app)
 
     @app.post("/accounts/{account_id}/login", response_model=s.LoginSession, status_code=201, dependencies=auth)
