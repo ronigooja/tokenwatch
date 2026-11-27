@@ -170,7 +170,7 @@ class BrowserUpstreamClient:
         self._forwarder = forwarder if forwarder is not None else PProxyForwarder()
         self._manager = (manager if manager is not None else Manager(config.manager_socket)) if config.manager_socket else None
         self._login_pages: dict[str, ManagerPage] = {}
-        self._login_autofill: dict[str, asyncio.Task] = {}
+        self._login_autofill: dict[str, tuple[asyncio.Event, asyncio.Task]] = {}
         self._clock = clock
         self._autofill_timeout = autofill_timeout
         self._accounts = {account.id: account for account in config.accounts}
@@ -308,8 +308,9 @@ class BrowserUpstreamClient:
                     ready()
                 account = self._accounts[account_id]
                 if page == "login" and account.email and account.password and self._autofill_timeout > 0:
-                    autofill = asyncio.create_task(self._manager_autofill(session, account.email, account.password))
-                    self._login_autofill[account_id] = autofill
+                    stop = asyncio.Event()
+                    autofill = asyncio.create_task(self._manager_autofill(session, account.email, account.password, stop))
+                    self._login_autofill[account_id] = (stop, autofill)
                 while True:
                     await asyncio.sleep(1)
                     async with asyncio.timeout(self._config.close_timeout):
@@ -323,11 +324,16 @@ class BrowserUpstreamClient:
                 self._login_pages.pop(account_id, None)
                 await self._close_manager_page(session)
 
-    async def _manager_autofill(self, session, email, password):
+    async def _manager_autofill(self, session, email, password, stop):
         try:
             async with asyncio.timeout(self._autofill_timeout):
-                while not await session.fill_credentials(LOGIN_URL.partition("?")[0], email, password):
-                    await asyncio.sleep(1)
+                while not stop.is_set():
+                    if await session.fill_credentials(LOGIN_URL.partition("?")[0], email, password):
+                        return
+                    try:
+                        await asyncio.wait_for(stop.wait(), timeout=1)
+                    except TimeoutError:
+                        pass
         except (Exception, asyncio.CancelledError):
             # Autofill is best-effort; errors can contain credentials and must not be logged.
             pass

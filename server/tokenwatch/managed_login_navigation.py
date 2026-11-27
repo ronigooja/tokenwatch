@@ -41,14 +41,15 @@ def check_current(logins, ticket, session, page):
 
 async def operate(logins, ticket, session, page, url=None):
     try:
-        if url is not None:
-            autofill = logins.upstream._login_autofill.get(session.account_id)
-            if autofill is not None:
-                autofill.cancel()
-                await asyncio.gather(autofill, return_exceptions=True)
-            check_current(logins, ticket, session, page)
         async with asyncio.timeout(logins.upstream._config.close_timeout):
             if url is not None:
+                autofill = logins.upstream._login_autofill.get(session.account_id)
+                if autofill is not None:
+                    stop, task = autofill
+                    stop.set()
+                    # Cancelling the manager RPC can quarantine the page; let it settle.
+                    await asyncio.shield(task)
+                check_current(logins, ticket, session, page)
                 await page.call("navigate", url=url)
                 check_current(logins, ticket, session, page)
             result = await page.info()
