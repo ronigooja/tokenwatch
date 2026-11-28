@@ -236,24 +236,25 @@ class Collectors:
         if pricing_id is None:
             raise DistributionWait("no_eligible_snapshot_coin", stamp)
 
-        reserved = False
+        reserved_symbol = None
 
         def reserve(db, stamp):
-            nonlocal reserved
+            nonlocal reserved_symbol
             current = db.get(Job, job.id)
             if not current or not current.enabled or current.kind != job.kind or current.interval_seconds != job.interval_seconds:
                 raise DistributionWait("snapshot_job_reconfigured", stamp)
             schedule = db.get(SnapshotSchedule, 1)
             if schedule.next_slot_at > stamp:
                 raise DistributionWait("waiting_for_snapshot_slot", schedule.next_slot_at)
-            if db.scalar(select(coins.c.id).where(coins.c.id == pricing_id)) is None:
+            symbol = db.scalar(select(coins.c.symbol).where(coins.c.id == pricing_id))
+            if symbol is None:
                 raise DistributionWait("snapshot_coin_no_longer_eligible", stamp)
             # Reserve the slot and rotate the target in the same commit as account spacing,
             # before any upstream work. Failures and process interruption still consume it.
             spacing = current.interval_seconds / db.scalar(select(func.count()).select_from(coins))
             schedule.next_slot_at = stamp + spacing
             schedule.pending_spacing = spacing
-            reserved = True
+            reserved_symbol = symbol
             if (capture := db.get(SnapshotCapture, pricing_id)) is None:
                 db.add(SnapshotCapture(pricing_id=pricing_id, last_attempt_at=stamp))
             else:
@@ -264,7 +265,7 @@ class Collectors:
             rows = await self.gate.get(None, BALANCE_PATH, balance_params(interval, None, [pricing_id]), parse_balances,
                                        single=True, reserve=reserve)
         finally:
-            if reserved:
+            if reserved_symbol is not None:
                 # Browser readiness can delay the physical fetch after dispatch. Do not
                 # let that delay leave the next account with an already overdue slot.
                 with self.store.begin() as db:
@@ -279,7 +280,8 @@ class Collectors:
             db.add(snapshot)
             db.flush()
             db.add_all(SnapshotRow(snapshot_id=snapshot.id, **row) for row in rows)
-            db.get(SnapshotCapture, pricing_id).last_captured_at = captured_at
+            capture = db.get(SnapshotCapture, pricing_id)
+            capture.last_captured_at, capture.last_symbol = captured_at, reserved_symbol
             return db.get(SnapshotSchedule, 1).next_slot_at
 
 

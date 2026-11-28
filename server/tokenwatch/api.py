@@ -657,12 +657,14 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
     @app.get("/snapshot-coins", response_model=list[s.SnapshotCoinOut], dependencies=auth)
     def list_snapshot_coins(db: DB):
         coins = snapshot_coins()
-        return db.execute(select(coins.c.id, coins.c.symbol, SnapshotCapture.last_captured_at,
-            func.count(Snapshot.id).label("snapshot_count")).outerjoin(
-                SnapshotCapture, SnapshotCapture.pricing_id == coins.c.id).outerjoin(
-                Snapshot, Snapshot.automatic_pricing_id == coins.c.id).group_by(
-                coins.c.id, coins.c.symbol, SnapshotCapture.last_captured_at).order_by(coins.c.symbol, coins.c.id)
-        ).mappings().all()
+        retained = select(Snapshot.automatic_pricing_id.label("id"), func.count().label("count")).where(
+            Snapshot.automatic_pricing_id.is_not(None)).group_by(Snapshot.automatic_pricing_id).subquery()
+        ids = select(coins.c.id).union(select(retained.c.id)).subquery()
+        symbol = func.coalesce(coins.c.symbol, SnapshotCapture.last_symbol).label("symbol")
+        return db.execute(select(ids.c.id, symbol, SnapshotCapture.last_captured_at,
+            func.coalesce(retained.c.count, 0).label("snapshot_count")).outerjoin(
+                coins, coins.c.id == ids.c.id).outerjoin(SnapshotCapture, SnapshotCapture.pricing_id == ids.c.id).outerjoin(
+                retained, retained.c.id == ids.c.id).order_by(symbol, ids.c.id)).mappings().all()
 
     @app.get("/snapshots", response_model=list[s.SnapshotOut], dependencies=auth)
     def list_snapshots(db: DB, limit: Page = 100, offset: Offset = 0, coin_id: str | None = None, legacy: bool = False):

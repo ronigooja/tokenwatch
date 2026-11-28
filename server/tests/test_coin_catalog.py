@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 
-from test_core import core, settings, balance
+from test_core import balance, core, enable_snapshot_job, settings
 from tokenwatch.api import create_app
 from tokenwatch.browser.client import _decode
 from tokenwatch.browser.transport import Response

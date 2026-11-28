@@ -18,6 +18,7 @@ def test_shutdown_drains_without_penalty(tmp_path, caplog, outcome, account_id):
                             request_interval=1, request_jitter=0)
         store = open_store(settings.database)
         with store.begin() as db:
+            db.scalar(select(Job).where(Job.kind == "snapshots")).enabled = False
             db.add(Account(id="a", proxy_ref="p", failures=2))
             db.add(Job(id=2, kind="daily", account_id=account_id, interval_seconds=604800,
                        next_run=0, enabled=True, last_error="previous"))

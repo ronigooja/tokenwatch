@@ -170,6 +170,7 @@ class SnapshotCapture(Base):
     pricing_id: Mapped[str] = mapped_column(primary_key=True)
     last_attempt_at: Mapped[float]
     last_captured_at: Mapped[datetime | None]
+    last_symbol: Mapped[str | None]
 
 
 class SnapshotRow(Base):
@@ -347,7 +348,7 @@ def open_store(path: Path):
             SnapshotSchedule.__table__.create(connection, checkfirst=True)
             connection.exec_driver_sql("INSERT OR IGNORE INTO snapshot_schedule (id, next_slot_at) VALUES (1, 0)")
             connection.exec_driver_sql("INSERT OR IGNORE INTO jobs (kind, options, interval_seconds, enabled, next_run) "
-                                       "VALUES ('snapshots', '{}', 604800, 0, 0)")
+                                       "VALUES ('snapshots', '{}', 604800, 1, 0)")
         connection.execute(text("PRAGMA user_version=9"))
         connection.commit()
         connection.execute(text("PRAGMA foreign_keys=ON"))

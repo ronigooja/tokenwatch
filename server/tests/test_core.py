@@ -53,9 +53,16 @@ def settings(tmp_path):
 
 
 @pytest.fixture
-def core(settings):
+def enable_snapshot_job():
+    return False
+
+
+@pytest.fixture
+def core(settings, enable_snapshot_job):
     store = open_store(settings.database)
     with store.begin() as db:
+        if not enable_snapshot_job:
+            db.scalar(select(Job).where(Job.kind == "snapshots")).enabled = False
         db.add_all([Account(id="a", proxy_ref="p"), Account(id="b", proxy_ref="q"),
                     Coin(id="ABC", symbol="ABC", pricing_id="abc", status="supported")])
         db.flush()

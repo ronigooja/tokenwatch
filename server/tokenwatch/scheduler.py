@@ -269,6 +269,9 @@ class Scheduler:
                     wait_reason = wait.reason if wait else None
         except Exception as exc:
             last_error = self.log_failure(job, exc)
+            if job.kind == "snapshots":
+                # The persisted slot, not the job's full rotation, governs retries.
+                next_run = self.clock()
         with self.store.begin() as db:
             current = db.get(Job, job.id)
             if current and all(getattr(current, key) == getattr(job, key) for key in (

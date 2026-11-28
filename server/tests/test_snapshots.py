@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime
 
 from fastapi.testclient import TestClient
+import pytest
 from sqlalchemy import select, text
 
 from test_core import balance, core, settings  # noqa: F401
@@ -10,6 +11,11 @@ from tokenwatch.collectors import BALANCE_PATH, Collectors
 from tokenwatch.db import Account, Coin, Exclusion, Job, Snapshot, SnapshotCapture, SnapshotRow, SnapshotSchedule, open_store
 from tokenwatch.scheduler import RequestGate, Scheduler
 from tokenwatch.upstream import RateLimited
+
+
+@pytest.fixture
+def enable_snapshot_job():
+    return True
 
 
 def test_automatic_snapshot_rotation_waits_failure_and_restart(core, settings):
@@ -40,8 +46,9 @@ def test_automatic_snapshot_rotation_waits_failure_and_restart(core, settings):
         assert not fake.calls
         with store.begin() as db:
             job = db.get(Job, job_id)
-            assert not job.enabled and job.interval_seconds == 604800
-            job.enabled, job.interval_seconds = True, 300
+            assert job.enabled and job.interval_seconds == 604800
+            job.interval_seconds = 300
+            job.next_run = 0
         await tick(scheduler)
         with store() as db:
             assert db.get(Job, job_id).wait_reason == "no_eligible_account"
@@ -120,7 +127,7 @@ def test_in_flight_snapshot_keeps_requested_identity_and_does_not_catch_up(core,
         return await get_json(*args)
 
     fake.get_json = slow_fetch
-    fake.responses.append([])
+    fake.responses.extend([[], []])
 
     async def run():
         scheduler = Scheduler(store, settings, {"snapshots": collectors.snapshots}, clock, gate)
@@ -128,13 +135,57 @@ def test_in_flight_snapshot_keeps_requested_identity_and_does_not_catch_up(core,
         await asyncio.gather(*scheduler.running.values())
         scheduler.tick()
         assert not scheduler.running
+        clock.value = 1400
+        scheduler.tick()
+        await asyncio.gather(*scheduler.running.values())
+        assert len(fake.calls) == 1
+        with store.begin() as db:
+            assert db.get(Job, job_id).wait_reason == "no_eligible_snapshot_coin"
+            db.delete(db.get(Exclusion, "ABC"))
+            db.get(Coin, "ABC").symbol = "NEW"
+        fake.get_json = get_json
+        # The first newly eligible coin is picked up on the next tick, not in a week.
+        clock.value = 1401
+        scheduler.tick()
+        await asyncio.gather(*scheduler.running.values())
+        assert [params["pricingIds"] for _, _, params in fake.calls] == ["abc", "different"]
 
     asyncio.run(run())
     with store() as db:
-        assert db.get(Job, job_id).next_run == 1400
-        assert db.scalar(select(Snapshot)).automatic_pricing_id == "abc"
-        assert db.get(SnapshotCapture, "abc").last_captured_at == datetime.utcfromtimestamp(1300)
-        assert not db.get(SnapshotCapture, "different")
+        assert db.get(Job, job_id).next_run == 1501
+        old = db.get(SnapshotCapture, "abc")
+        assert old.last_captured_at == datetime.utcfromtimestamp(1300) and old.last_symbol == "ABC"
+    app = create_app(settings, run_scheduler=False)
+    with TestClient(app, headers={"Authorization": "Bearer test-token"}) as client:
+        snapshots = {row["id"]: row for row in client.get("/snapshot-coins").json()}
+        assert snapshots["abc"]["symbol"] == "ABC" and snapshots["abc"]["snapshot_count"] == 1
+        assert snapshots["different"]["symbol"] == "NEW"
+        assert [row["pricing_ids"] for row in client.get("/snapshots", params={"coin_id": "abc"}).json()] == [["abc"]]
+
+
+def test_generic_failure_after_reservation_keeps_next_slot(core, settings):
+    store, fake, clock, gate, collectors = core
+    with store.begin() as db:
+        db.add(Coin(id="B", symbol="B", status="supported", pricing_id="b"))
+        job = db.scalar(select(Job).where(Job.kind == "snapshots"))
+        job.interval_seconds = 200
+        job_id = job.id
+    fake.responses.extend([RuntimeError("synthetic post-reservation failure"), []])
+
+    async def run():
+        scheduler = Scheduler(store, settings, {"snapshots": collectors.snapshots}, clock, gate)
+        scheduler.tick()
+        await asyncio.gather(*scheduler.running.values())
+        with store() as db:
+            job = db.get(Job, job_id)
+            assert job.next_run == 1100 and job.last_error == "RuntimeError on unknown"
+            assert job.next_run == db.get(SnapshotSchedule, 1).next_slot_at
+        clock.value = 1100
+        scheduler.tick()
+        await asyncio.gather(*scheduler.running.values())
+        assert [params["pricingIds"] for _, _, params in fake.calls] == ["abc", "b"]
+
+    asyncio.run(run())
 
 
 def test_restart_after_unsettled_reservation_waits_a_fresh_slot(core, settings):
@@ -179,7 +230,10 @@ def test_snapshot_api_filters_and_jobs(settings):
                 Coin(id="two", symbol="AAA", pricing_id=exact_id, status="supported"),
                 Coin(id="three", symbol="BBB", pricing_id=exact_id.lower(), status="supported"),
                 Coin(id="four", symbol="CCC", pricing_id="lost", status="excluded"),
-                SnapshotCapture(pricing_id=exact_id, last_attempt_at=1000, last_captured_at=captured_at),
+                Coin(id="five", symbol="DDD", pricing_id="expired", status="supported"),
+                SnapshotCapture(pricing_id=exact_id, last_attempt_at=1000, last_captured_at=captured_at, last_symbol="AAA"),
+                SnapshotCapture(pricing_id="lost", last_attempt_at=1000, last_captured_at=captured_at, last_symbol="OLD"),
+                SnapshotCapture(pricing_id="expired", last_attempt_at=1000, last_captured_at=captured_at, last_symbol="OLD"),
                 Snapshot(id=1, interval="14d", pricing_ids=[exact_id], truncated=False),
                 Snapshot(id=2, interval="7d", pricing_ids=[exact_id], automatic_pricing_id=exact_id, truncated=False),
                 Snapshot(id=3, interval="7d", pricing_ids=["lost"], automatic_pricing_id="lost", truncated=False),
@@ -188,6 +242,8 @@ def test_snapshot_api_filters_and_jobs(settings):
         assert client.get("/snapshot-coins").json() == [
             {"id": exact_id, "symbol": "AAA", "last_captured_at": "2026-01-01T00:00:00Z", "snapshot_count": 2},
             {"id": exact_id.lower(), "symbol": "BBB", "last_captured_at": None, "snapshot_count": 0},
+            {"id": "expired", "symbol": "DDD", "last_captured_at": "2026-01-01T00:00:00Z", "snapshot_count": 0},
+            {"id": "lost", "symbol": "OLD", "last_captured_at": "2026-01-01T00:00:00Z", "snapshot_count": 1},
         ]
         for params, ids in (({}, [4, 3, 2, 1]), ({"coin_id": exact_id}, [4, 2]),
                             ({"coin_id": exact_id, "limit": 1, "offset": 1}, [2]),
@@ -198,7 +254,7 @@ def test_snapshot_api_filters_and_jobs(settings):
         assert client.get("/snapshots/1").json()["interval"] == "14d"
         assert client.post("/snapshots", json={}).status_code == 405
         job, = client.get("/jobs").json()
-        assert job["kind"] == "snapshots" and not job["enabled"]
+        assert job["kind"] == "snapshots" and job["enabled"]
         url = f"/jobs/{job['id']}"
         update = {"kind": "snapshots", "interval_seconds": 600, "enabled": True, "options": {}}
         assert client.put(url, json={**update, "options": {"balance_min": 10}}).status_code == 422
@@ -229,7 +285,7 @@ def test_v8_migration_preserves_manual_snapshots_and_seeds_once(settings):
         assert legacy.automatic_pricing_id is None and legacy.balance_min == 1.5 and legacy.pricing_ids == ["legacy"]
         assert db.get(SnapshotRow, (7, "entity"))
         job = db.scalar(select(Job).where(Job.kind == "snapshots"))
-        assert not job.enabled and job.interval_seconds == 604800
+        assert job.enabled and job.interval_seconds == 604800
         db.delete(job)
     migrated.kw["bind"].dispose()
     reopened = open_store(settings.database)

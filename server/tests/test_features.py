@@ -6,7 +6,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from test_core import core, settings, transfer
+from test_core import core, enable_snapshot_job, settings, transfer
 from tokenwatch.api import create_app
 from tokenwatch.coins import public_json
 from tokenwatch.db import Account, Coin, DailyBalance, now
