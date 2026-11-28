@@ -255,11 +255,6 @@ public struct APIClient: Sendable {
         try await decode(request(["snapshots"], query: [.init(name: "coin_id", value: coinID)] + page.queryItems))
     }
 
-    /// Records captured before per-coin tracking. Read-only.
-    public func legacySnapshots(page: Page = .init()) async throws -> [Snapshot] {
-        try await decode(request(["snapshots"], query: [.init(name: "legacy", value: "true")] + page.queryItems))
-    }
-
     public func snapshot(_ id: Int) async throws -> SnapshotDetail {
         try await decode(request(["snapshots", String(id)]))
     }

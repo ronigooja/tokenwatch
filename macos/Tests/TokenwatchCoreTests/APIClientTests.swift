@@ -150,10 +150,9 @@ private final class StubProtocol: URLProtocol {
             body = snapshotCoinsFixture
         case ("GET", "/fixture/snapshots") where authorized:
             let names = Set(query.map(\.name))
-            let legacy = names == ["legacy", "limit", "offset"] && query.contains(.init(name: "legacy", value: "true"))
             let coin = names == ["coin_id", "limit", "offset"] && query.contains(.init(name: "coin_id", value: fixtureCoinID))
             let paged = query.contains(.init(name: "limit", value: "2")) && query.contains(.init(name: "offset", value: "2"))
-            let valid = (legacy || coin) && paged
+            let valid = coin && paged
             status = valid ? 200 : 422
             body = valid ? "[\(snapshotListFixture)]" : #"{"detail":"Invalid snapshot filter"}"#
         case ("GET", "/fixture/snapshots/42") where authorized:
@@ -234,8 +233,6 @@ final class APIClientTests: XCTestCase {
         let history = try await api.snapshots(coinID: fixtureCoinID, page: Page(limit: 2, offset: 2))
         XCTAssertEqual(history.first?.id, 42)
         XCTAssertEqual(history.first?.truncated, true)
-        let legacy = try await api.legacySnapshots(page: Page(limit: 2, offset: 2))
-        XCTAssertEqual(legacy.first?.pricingIds, ["bitcoin-fixture"])
         let detail = try await api.snapshot(42)
         XCTAssertEqual(detail.rows.first?.entityName, "Owner A")
         XCTAssertNil(detail.rows.first?.balanceUsd)

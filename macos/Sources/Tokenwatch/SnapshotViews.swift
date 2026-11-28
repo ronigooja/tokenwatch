@@ -7,12 +7,10 @@ import TokenwatchCore
 /// controls are disabled while any request runs, so a click can never open a screen that will not load.
 @MainActor
 struct SnapshotsView: View {
-    private enum Origin: Equatable { case history(SnapshotCoin), earlier }
     private enum Screen: Equatable {
         case index
         case history(SnapshotCoin)
-        case earlier
-        case detail(Int, Origin)
+        case detail(Int, SnapshotCoin)
         case compare(SnapshotCoin)
     }
 
@@ -21,10 +19,10 @@ struct SnapshotsView: View {
     @State private var screen = Screen.index
     @State private var coins: [SnapshotCoin] = []
     @State private var query = ""
+    /// Row selection in the coin index. Used only to detect a row click; reset as soon as it is handled.
+    @State private var selectedCoinID: String?
     @State private var history: [Snapshot] = []
     @State private var historyPage = Page()
-    @State private var earlier: [Snapshot] = []
-    @State private var earlierPage = Page()
     /// Kept across history pages. Cleared when a different coin is opened.
     @State private var selected: [Int: Snapshot] = [:]
     @State private var selectionCoinID: String?
@@ -44,6 +42,7 @@ struct SnapshotsView: View {
             ActionNotice(action: action)
             content
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .navigationTitle("Snapshots")
         .task { await action.load { try await loadIndex() } }
     }
@@ -52,7 +51,6 @@ struct SnapshotsView: View {
         switch screen {
         case .index: indexView
         case .history(let coin): historyView(coin)
-        case .earlier: earlierView
         case .detail: detailContent
         case .compare: compareContent
         }
@@ -67,21 +65,22 @@ struct SnapshotsView: View {
                 Text("Snapshots are captured automatically. Each coin lists its captures.")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("Earlier Snapshots") { openEarlier() }.disabled(action.busy)
-                Button("Refresh") { action.run { coins = try await client.snapshotCoins() } }.disabled(action.busy)
+                Button {
+                    action.run { coins = try await client.snapshotCoins() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("Refresh")
+                .accessibilityLabel("Refresh")
+                .disabled(action.busy)
             }
             if coins.isEmpty {
-                if !action.busy {
-                    ContentUnavailableView("No Eligible Coins", systemImage: "camera",
-                                           description: Text("No coins are eligible for automatic snapshots yet."))
-                }
+                if !action.busy { compactEmptyState("No coins are eligible for automatic snapshots yet.") }
             } else if visible.isEmpty {
-                ContentUnavailableView.search(text: query)
+                compactEmptyState("No coins match “\(query)”.")
             } else {
-                Table(visible) {
-                    TableColumn("Coin") { (coin: SnapshotCoin) in
-                        Button(coin.symbol) { openHistory(coin) }.buttonStyle(.link)
-                    }
+                Table(visible, selection: $selectedCoinID) {
+                    TableColumn("Coin") { (coin: SnapshotCoin) in Text(coin.symbol) }
                     TableColumn("Last Captured") { (coin: SnapshotCoin) in
                         if let date = coin.lastCapturedAt {
                             Text(date.formatted(date: .abbreviated, time: .shortened))
@@ -93,9 +92,20 @@ struct SnapshotsView: View {
                         .width(90)
                 }
                 .disabled(action.busy)
+                .onChange(of: selectedCoinID) { _, id in
+                    // A row click opens that coin's history. The selection is cleared at once so the same row can be clicked again.
+                    guard let id, let coin = visible.first(where: { $0.id == id }) else { selectedCoinID = nil; return }
+                    selectedCoinID = nil
+                    openHistory(coin)
+                }
             }
         }
         .searchable(text: $query, prompt: "Search by symbol")
+    }
+
+    /// Top-aligned, single-line empty state. Replaces the full-height unavailable view so it does not leave blank space.
+    private func compactEmptyState(_ text: String) -> some View {
+        Text(text).foregroundStyle(.secondary).padding(.top, 4)
     }
 
     // MARK: Per-coin history
@@ -115,9 +125,7 @@ struct SnapshotsView: View {
             Text("Select at least two snapshots to compare. Selections are kept across pages.")
                 .font(.caption).foregroundStyle(.secondary)
             if history.isEmpty {
-                if !action.busy {
-                    ContentUnavailableView("No Snapshots on This Page", systemImage: "camera")
-                }
+                if !action.busy { compactEmptyState("No snapshots on this page.") }
             } else {
                 Table(history) {
                     TableColumn("Compare") { (entry: Snapshot) in
@@ -133,39 +141,7 @@ struct SnapshotsView: View {
                     TableColumn("Minimum") { (entry: Snapshot) in Text(minimumText(entry.balanceMin)) }
                     TableColumn("Coverage") { (entry: Snapshot) in Text(coverageText(entry.truncated)) }
                     TableColumn("") { (entry: Snapshot) in
-                        Button("Details") { openDetail(entry.id, from: .history(coin)) }
-                            .buttonStyle(.link).disabled(action.busy)
-                    }.width(70)
-                }
-                .disabled(action.busy)
-            }
-        }
-    }
-
-    // MARK: Earlier snapshots (read-only, not part of any coin history)
-
-    private var earlierView: some View {
-        VStack(alignment: .leading) {
-            Text("Earlier Snapshots").font(.title2.bold())
-            Text("Records captured before per-coin tracking. Read-only; they are not included in coin histories or comparisons.")
-                .font(.caption).foregroundStyle(.secondary)
-            Pager(page: earlierPage, count: earlier.count, busy: action.busy) { offset in
-                action.run { try await loadEarlier(Page(offset: offset)) }
-            }
-            if earlier.isEmpty {
-                if !action.busy {
-                    ContentUnavailableView("No Earlier Snapshots", systemImage: "tray")
-                }
-            } else {
-                Table(earlier) {
-                    TableColumn("Captured") { (entry: Snapshot) in
-                        Text(entry.createdAt.formatted(date: .abbreviated, time: .shortened))
-                    }
-                    TableColumn("Lookback") { (entry: Snapshot) in Text(entry.lookback.rawValue) }
-                    TableColumn("Minimum") { (entry: Snapshot) in Text(minimumText(entry.balanceMin)) }
-                    TableColumn("Coverage") { (entry: Snapshot) in Text(coverageText(entry.truncated)) }
-                    TableColumn("") { (entry: Snapshot) in
-                        Button("Details") { openDetail(entry.id, from: .earlier) }
+                        Button("Details") { openDetail(entry.id, coin) }
                             .buttonStyle(.link).disabled(action.busy)
                     }.width(70)
                 }
@@ -198,20 +174,11 @@ struct SnapshotsView: View {
         }
     }
 
-    private func openEarlier() {
-        action.run {
-            let rows = try await client.legacySnapshots(page: Page())
-            earlier = rows
-            earlierPage = Page()
-            screen = .earlier
-        }
-    }
-
-    private func openDetail(_ id: Int, from origin: Origin) {
+    private func openDetail(_ id: Int, _ coin: SnapshotCoin) {
         action.run {
             let loaded = try await client.snapshot(id)
             detail = loaded
-            screen = .detail(id, origin)
+            screen = .detail(id, coin)
         }
     }
 
@@ -230,13 +197,10 @@ struct SnapshotsView: View {
         guard !action.busy else { return }
         switch screen {
         case .index: break
-        case .history, .earlier: screen = .index
-        case .detail(_, let origin):
+        case .history: screen = .index
+        case .detail(_, let coin):
             detail = nil
-            switch origin {
-            case .history(let coin): screen = .history(coin)
-            case .earlier: screen = .earlier
-            }
+            screen = .history(coin)
         case .compare(let coin):
             comparison = nil
             screen = .history(coin)
@@ -250,11 +214,6 @@ struct SnapshotsView: View {
     private func loadHistory(_ coin: SnapshotCoin, _ newPage: Page) async throws {
         history = try await client.snapshots(coinID: coin.id, page: newPage)
         historyPage = newPage
-    }
-
-    private func loadEarlier(_ newPage: Page) async throws {
-        earlier = try await client.legacySnapshots(page: newPage)
-        earlierPage = newPage
     }
 }
 
