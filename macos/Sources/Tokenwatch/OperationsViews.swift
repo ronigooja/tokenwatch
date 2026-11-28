@@ -252,7 +252,7 @@ private struct JobForm: View {
     var body: some View {
         Form {
             Picker("Job type", selection: $kind) {
-                ForEach(JobKind.allCases, id: \.self) { item in Text(item.rawValue).tag(item) }
+                ForEach(JobKind.editable, id: \.self) { item in Text(item.rawValue).tag(item) }
             }
             AccountPicker(accounts: accounts, selection: $account, anyAccountLabel: kind == .transfers ? nil : "Any account")
             if kind == .transfers { CoinPicker(coins: coins, selection: $coin) }

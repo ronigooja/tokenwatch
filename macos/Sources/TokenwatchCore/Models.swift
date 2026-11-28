@@ -49,7 +49,10 @@ public enum RuleDirection: String, Codable, Sendable, CaseIterable {
     public var isBalance: Bool { self == .increase || self == .decrease }
 }
 public enum JobKind: String, Codable, Sendable, CaseIterable {
-    case transfers, daily, coinCatalog = "coin_catalog"
+    case transfers, daily, coinCatalog = "coin_catalog", snapshots
+
+    /// Kinds the Jobs editor may create. `snapshots` is decoded for display only until its backend shape is confirmed.
+    public static let editable: [JobKind] = [.transfers, .daily, .coinCatalog]
 }
 public enum RuleSource: String, Codable, Sendable, CaseIterable { case transfer, balanceDiff = "balance_diff" }
 
@@ -226,20 +229,15 @@ public struct BalanceCurve: Codable, Sendable {
     public let series: [String: [BalancePoint]]
 }
 
-public struct SnapshotInput: Codable, Sendable {
-    public let accountId: String
-    public let interval: Interval
-    public let balanceMin: Double?
-    public let pricingIds: [String]?
-
-    public init(accountId: String, interval: Interval, balanceMin: Double?, pricingIds: [String]?) {
-        self.accountId = accountId
-        self.interval = interval
-        self.balanceMin = balanceMin
-        self.pricingIds = pricingIds
-    }
+/// One coin in the automatic snapshot index. `id` is an opaque Arkham pricing ID: send it back as `coin_id`, never display it.
+public struct SnapshotCoin: Codable, Sendable, Hashable, Identifiable {
+    public let id: String
+    public let symbol: String
+    public let lastCapturedAt: Date?
+    public let snapshotCount: Int
 }
 
+/// `pricingIds` and `balanceMin` are decoded for interpretation only; pricing IDs are never displayed.
 public struct Snapshot: Codable, Sendable, Identifiable {
     public let id: Int
     public let createdAt: Date
@@ -249,6 +247,7 @@ public struct Snapshot: Codable, Sendable, Identifiable {
     public let truncated: Bool
 }
 
+/// `tokenBalances` may contain internal identifiers and is decoded but never displayed.
 public struct SnapshotRow: Codable, Sendable, Identifiable {
     public var id: String { entityId }
     public let entityId: String
@@ -269,17 +268,6 @@ public struct SnapshotDetail: Codable, Sendable, Identifiable {
     public let pricingIds: [String]?
     public let truncated: Bool
     public let rows: [SnapshotRow]
-}
-
-public struct SnapshotDiff: Codable, Sendable {
-    public struct Change: Codable, Sendable {
-        public let before: SnapshotRow
-        public let after: SnapshotRow
-    }
-
-    public let added: [SnapshotRow]
-    public let removed: [SnapshotRow]
-    public let changed: [Change]
 }
 
 public struct Subscription: Codable, Sendable, Identifiable {

@@ -246,22 +246,22 @@ public struct APIClient: Sendable {
         try await decode(request(["balances"], query: filter.queryItems))
     }
 
-    public func snapshots(_ page: Page = .init()) async throws -> [Snapshot] {
-        try await decode(request(["snapshots"], query: page.queryItems))
+    public func snapshotCoins() async throws -> [SnapshotCoin] {
+        try await decode(request(["snapshot-coins"]))
+    }
+
+    /// History for one opaque coin ID (`coin_id` query item). The ID is sent unchanged and is never displayed.
+    public func snapshots(coinID: String, page: Page = .init()) async throws -> [Snapshot] {
+        try await decode(request(["snapshots"], query: [.init(name: "coin_id", value: coinID)] + page.queryItems))
+    }
+
+    /// Records captured before per-coin tracking. Read-only.
+    public func legacySnapshots(page: Page = .init()) async throws -> [Snapshot] {
+        try await decode(request(["snapshots"], query: [.init(name: "legacy", value: "true")] + page.queryItems))
     }
 
     public func snapshot(_ id: Int) async throws -> SnapshotDetail {
         try await decode(request(["snapshots", String(id)]))
-    }
-
-    public func createSnapshot(_ input: SnapshotInput) async throws -> Snapshot {
-        try await decode(request(["snapshots"], method: "POST", body: input))
-    }
-
-    public func compareSnapshots(before: Int, after: Int) async throws -> SnapshotDiff {
-        try await decode(request(["snapshots", "compare"], query: [
-            .init(name: "before", value: String(before)), .init(name: "after", value: String(after)),
-        ]))
     }
 
     public func subscriptions() async throws -> [Subscription] { try await decode(request(["subscriptions"])) }

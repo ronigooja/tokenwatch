@@ -145,6 +145,20 @@ private final class StubProtocol: URLProtocol {
         case ("DELETE", "/fixture/coin-catalog/exclusion-rules/tag/bStocks") where authorized:
             status = 204
             body = ""
+        case ("GET", "/fixture/snapshot-coins") where authorized:
+            status = 200
+            body = snapshotCoinsFixture
+        case ("GET", "/fixture/snapshots") where authorized:
+            let names = Set(query.map(\.name))
+            let legacy = names == ["legacy", "limit", "offset"] && query.contains(.init(name: "legacy", value: "true"))
+            let coin = names == ["coin_id", "limit", "offset"] && query.contains(.init(name: "coin_id", value: fixtureCoinID))
+            let paged = query.contains(.init(name: "limit", value: "2")) && query.contains(.init(name: "offset", value: "2"))
+            let valid = (legacy || coin) && paged
+            status = valid ? 200 : 422
+            body = valid ? "[\(snapshotListFixture)]" : #"{"detail":"Invalid snapshot filter"}"#
+        case ("GET", "/fixture/snapshots/42") where authorized:
+            status = 200
+            body = snapshotDetailFixture
         case ("GET", "/fixture/coin-catalog/chains") where authorized:
             status = 200
             body = #"[{"alpha_chain_id":"56","arkham_chains":["bsc","ethereum"],"conflict":true}]"#
@@ -203,7 +217,30 @@ private let eventFixture = """
      "data":{"usd":250,"transfer_id":"tr-1","account_id":"fixture-account","entities":["owner_a"]}}
     """
 
+private let snapshotCoinsFixture = #"[{"id":"bitcoin-fixture","symbol":"BTC","last_captured_at":"2026-01-02T03:04:05Z","snapshot_count":3},{"id":"ethereum-fixture","symbol":"ETH","last_captured_at":null,"snapshot_count":0}]"#
+
+private let snapshotListFixture = #"{"id":42,"created_at":"2026-01-02T03:04:05Z","interval":"7d","balance_min":100,"pricing_ids":["bitcoin-fixture"],"truncated":true}"#
+
+private let snapshotDetailFixture = #"{"id":42,"created_at":"2026-01-02T03:04:05Z","interval":"7d","balance_min":100,"pricing_ids":null,"truncated":false,"rows":[{"entity_id":"owner_a","entity_name":"Owner A","entity_type":"exchange","balance_unit":5,"balance_usd":null,"prev_balance_unit":null,"prev_balance_usd":null,"token_balances":{"internal_id":"raw-1"}}]}"#
+
 final class APIClientTests: XCTestCase {
+    func testSnapshotContractRequestsAndDecoding() async throws {
+        let api = try client()
+        let coins = try await api.snapshotCoins()
+        XCTAssertEqual(coins.map(\.id), ["bitcoin-fixture", "ethereum-fixture"])
+        XCTAssertEqual(coins.first?.snapshotCount, 3)
+        XCTAssertNotNil(coins.first?.lastCapturedAt)
+        XCTAssertNil(coins.last?.lastCapturedAt)
+        let history = try await api.snapshots(coinID: fixtureCoinID, page: Page(limit: 2, offset: 2))
+        XCTAssertEqual(history.first?.id, 42)
+        XCTAssertEqual(history.first?.truncated, true)
+        let legacy = try await api.legacySnapshots(page: Page(limit: 2, offset: 2))
+        XCTAssertEqual(legacy.first?.pricingIds, ["bitcoin-fixture"])
+        let detail = try await api.snapshot(42)
+        XCTAssertEqual(detail.rows.first?.entityName, "Owner A")
+        XCTAssertNil(detail.rows.first?.balanceUsd)
+    }
+
     func testTokenMaskAndInputResolution() throws {
         XCTAssertEqual(TokenMask.display("abcdefghijk"), "••••••••hijk")
         XCTAssertEqual(TokenMask.display("abc"), "•••")
@@ -453,6 +490,14 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(pooled.accountId)
         XCTAssertEqual(pooled.waitReason, "No active account")
         XCTAssertNil(pooled.lastError)
+    }
+
+    func testJobDecodesSnapshotsKindWithoutEditorOffer() throws {
+        let scheduled = #"{"id":7,"kind":"snapshots","account_id":null,"coin_id":null,"options":{"balance_min":null},"interval_seconds":3600,"enabled":true,"next_run":0,"wait_reason":null,"last_error":null}"#
+        let job = try APIClient.decoder().decode(Job.self, from: Data(scheduled.utf8))
+        XCTAssertEqual(job.kind, .snapshots)
+        XCTAssertFalse(JobKind.editable.contains(.snapshots))
+        XCTAssertEqual(Set(JobKind.editable), Set(JobKind.allCases).subtracting([.snapshots]))
     }
 
     func testJobDecodesLastError() throws {
