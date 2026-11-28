@@ -924,7 +924,7 @@ def test_schema_reset_preserves_history_and_jobs(settings):
         assert db.query(DailyCollection).count() == 0
         assert db.get(TransferCoin, ("tx", "OLD")) and db.get(Transfer, "tx")
         assert db.get(Event, 1).coin_id == "OLD" and db.get(PushLog, 1).event_id == 1
-        assert db.get(Snapshot, 1) and db.get(Account, "a")
+        assert db.get(Snapshot, 1) is None and db.get(Account, "a")
         assert not db.get(Job, 2).enabled and db.get(Job, 2).wait_reason == "coin_reassignment_required"
         assert db.get(Job, 3).enabled
         assert db.execute(text("PRAGMA foreign_key_check")).all() == []
@@ -1030,7 +1030,7 @@ def test_migrate_v4_preserves_coin(tmp_path):
     store = open_store(path)
     with store() as db:
         assert db.get(Coin, "old").searched_deployments == []
-        assert db.scalar(text("PRAGMA user_version")) == 9
+        assert db.scalar(text("PRAGMA user_version")) == 10
     store.kw["bind"].dispose()
 
 
@@ -1053,7 +1053,7 @@ def test_migrate_v6_preserves_data(tmp_path):
         coin = db.get(Coin, "old")
         assert (coin.symbol, coin.status, coin.pricing_id, coin.price_check_status) == ("OLD", "supported", "old", None)
         assert db.get(CatalogSettings, "matching").failure_limit == 3
-        assert db.scalar(text("PRAGMA user_version")) == 9
+        assert db.scalar(text("PRAGMA user_version")) == 10
     store.kw["bind"].dispose()
 
 
@@ -1080,7 +1080,7 @@ def test_migrate_v7_clears_results_and_drops_evidence(tmp_path):
         assert (old.symbol, old.status, old.pricing_id, old.price_check_status) == ("OLD", "supported", "old", None)
         assert manual.price_check_status == "manual"
         assert manual.price_check_ratio is None and manual.price_checked_at is None
-        assert db.scalar(text("PRAGMA user_version")) == 9
+        assert db.scalar(text("PRAGMA user_version")) == 10
         columns = {row[1] for row in db.execute(text("PRAGMA table_info(coins)"))}
         assert not columns.intersection({"arkham_price", "arkham_price_at", "arkham_chains", "chain_check_status"})
     store.kw["bind"].dispose()

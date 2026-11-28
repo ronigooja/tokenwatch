@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from . import schemas as s
 from .coins import CoinCatalog, SEARCH_PATH, deployment_keys, search_candidates, sync_coin
 from .hub import Hub
-from .collectors import Collectors, snapshot_coins, snapshot_diff
+from .collectors import Collectors, snapshot_coins
 from .config import load_settings
 from .login_session import LoginSessions
 from . import novnc, managed_login_navigation
@@ -667,32 +667,16 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
                 retained, retained.c.id == ids.c.id).order_by(symbol, ids.c.id)).mappings().all()
 
     @app.get("/snapshots", response_model=list[s.SnapshotOut], dependencies=auth)
-    def list_snapshots(db: DB, limit: Page = 100, offset: Offset = 0, coin_id: str | None = None, legacy: bool = False):
-        query = select(Snapshot)
-        if coin_id is not None:
-            if legacy:
-                raise HTTPException(422, "coin_id and legacy=true cannot be combined")
-            query = query.where(Snapshot.automatic_pricing_id == coin_id)
-        elif legacy:
-            query = query.where(Snapshot.automatic_pricing_id.is_(None))
+    def list_snapshots(coin_id: str, db: DB, limit: Page = 100, offset: Offset = 0):
+        query = select(Snapshot).where(Snapshot.automatic_pricing_id == coin_id)
         return db.scalars(query.order_by(Snapshot.id.desc()).offset(offset).limit(limit)).all()
-
-    def snapshot_rows(db, snapshot_id):
-        return db.scalars(select(SnapshotRow).where(SnapshotRow.snapshot_id == snapshot_id)
-                          .order_by(SnapshotRow.entity_id)).all()
-
-    @app.get("/snapshots/compare", response_model=s.SnapshotDiff, dependencies=auth)
-    def compare_snapshots(before: int, after: int, db: DB):
-        for snapshot_id in (before, after):
-            find(db, Snapshot, snapshot_id)
-        old, new = ([s.SnapshotRowOut.model_validate(row).model_dump() for row in snapshot_rows(db, snapshot_id)]
-                    for snapshot_id in (before, after))
-        return snapshot_diff(old, new)
 
     @app.get("/snapshots/{snapshot_id}", response_model=s.SnapshotDetail, dependencies=auth)
     def get_snapshot(snapshot_id: int, db: DB):
         snapshot = s.SnapshotOut.model_validate(find(db, Snapshot, snapshot_id)).model_dump()
-        return {**snapshot, "rows": snapshot_rows(db, snapshot_id)}
+        rows = db.scalars(select(SnapshotRow).where(SnapshotRow.snapshot_id == snapshot_id)
+                          .order_by(SnapshotRow.entity_id)).all()
+        return {**snapshot, "rows": rows}
 
     @app.websocket("/ws/events")
     async def event_socket(websocket: WebSocket):

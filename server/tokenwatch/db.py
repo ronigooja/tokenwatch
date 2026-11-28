@@ -305,7 +305,7 @@ def open_store(path: Path):
             Base.metadata.create_all(connection)
         elif version == 1:
             migrate_v1(connection)
-        elif version not in (2, 3, 4, 5, 6, 7, 8, 9):
+        elif version not in (2, 3, 4, 5, 6, 7, 8, 9, 10):
             raise RuntimeError(f"Unsupported database schema version: {version}")
         if version == 2:
             connection.exec_driver_sql("ALTER TABLE jobs ADD COLUMN last_error VARCHAR")
@@ -349,7 +349,12 @@ def open_store(path: Path):
             connection.exec_driver_sql("INSERT OR IGNORE INTO snapshot_schedule (id, next_slot_at) VALUES (1, 0)")
             connection.exec_driver_sql("INSERT OR IGNORE INTO jobs (kind, options, interval_seconds, enabled, next_run) "
                                        "VALUES ('snapshots', '{}', 604800, 1, 0)")
-        connection.execute(text("PRAGMA user_version=9"))
+        if version < 10:
+            # Migrations run with foreign keys disabled, so delete the children explicitly.
+            connection.exec_driver_sql("DELETE FROM snapshot_rows WHERE snapshot_id IN "
+                                       "(SELECT id FROM snapshots WHERE automatic_pricing_id IS NULL)")
+            connection.exec_driver_sql("DELETE FROM snapshots WHERE automatic_pricing_id IS NULL")
+        connection.execute(text("PRAGMA user_version=10"))
         connection.commit()
         connection.execute(text("PRAGMA foreign_keys=ON"))
     return sessionmaker(engine, expire_on_commit=False)

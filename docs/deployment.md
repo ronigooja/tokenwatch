@@ -19,7 +19,7 @@ Set the optional `binance_proxy_url` secret in `/etc/tokenwatch/config.local.tom
 
 Database initialization or migration seeds an enabled `snapshots` job with a weekly rotation (`interval_seconds: 604800`). Use `GET /jobs` to find its ID and `PUT /jobs/{id}` with `{"kind":"snapshots","account_id":null,"coin_id":null,"options":{},"interval_seconds":604800,"enabled":false}` to disable it. A change to `interval_seconds` takes effect at the next slot reservation. If deleted, recreate the job through `POST /jobs`. Collection requires an enabled job, a configured Arkham upstream, a [supported mapped coin](architecture.md#coin-list), and an eligible account.
 
-`snapshot_retention_days` applies to both automatic and historical snapshots. Size it for the number of captures the client needs, allowing extra time for account delays and failed attempts.
+`snapshot_retention_days` applies to automatic snapshots. Size it for the number of captures the client needs, allowing extra time for account delays and failed attempts. Back up the database before upgrading to schema 10: startup removes manual snapshots and their entity rows, while preserving automatic snapshots, capture state, and scheduling.
 
 ## Browser Manager
 

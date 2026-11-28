@@ -14,7 +14,7 @@ from tokenwatch.api import create_app
 from tokenwatch.collectors import Collectors
 from tokenwatch.config import Settings, load_settings
 from tokenwatch.db import (Account, Coin, DailyBalance, DailyCollection, Event, Exclusion,
-                           Job, PushLog, Rule, Snapshot, SnapshotRow, Subscription, Transfer, TransferCursor, open_store)
+                           Job, PushLog, Rule, Subscription, Transfer, TransferCursor, open_store)
 from tokenwatch.scheduler import AccountUnavailable, RequestGate, Scheduler
 from tokenwatch.upstream import AuthRequired, BadResponse, Blocked, RateLimited, RequestRejected
 
@@ -277,7 +277,7 @@ def test_config_environment_and_migration(settings, tmp_path, monkeypatch):
         store = open_store(loaded.database)
         with store() as db:
             assert db.scalar(text("PRAGMA journal_mode")) == "wal"
-            assert db.scalar(text("PRAGMA user_version")) == 9
+            assert db.scalar(text("PRAGMA user_version")) == 10
         store.kw["bind"].dispose()
 
 
@@ -499,14 +499,6 @@ def test_stored_daily_balance_min_through_scheduler(core, settings, value):
             assert fake.calls[0][2]["balanceMin"] == "100000" and job.last_error is None
 
 
-def test_snapshot_old_float_row_serializes(settings):
-    app = create_app(settings, run_scheduler=False)
-    with TestClient(app, headers={"Authorization": "Bearer test-token"}) as client:
-        with app.state.store.begin() as db:
-            db.add(Snapshot(interval="7d", balance_min=100000.5, pricing_ids=["abc"], truncated=False))
-        assert client.get("/snapshots").json()[0]["balance_min"] == 100000.5
-
-
 def test_transfer_rules_cooldown_merge_and_filters(core):
     store, fake, clock, _, collectors = core
     conditions = {"coins_include": ["ABC"], "min_usd": 300, "entities_include": ["e"], "direction": "inbound"}
@@ -533,7 +525,7 @@ def test_transfer_rules_cooldown_merge_and_filters(core):
         assert by_level["important"].data["id"] == "b"
 
 
-def test_api_crud_snapshots_filters_and_socket(settings):
+def test_api_crud_filters_and_socket(settings):
     fake = FakeUpstream()
     fake.responses.append({"id": "user"})
     app = create_app(settings, fake, catalog_transport=httpx.MockTransport(lambda request: httpx.Response(500)), run_scheduler=False)
@@ -560,18 +552,6 @@ def test_api_crud_snapshots_filters_and_socket(settings):
         assert client.delete("/coins/ABC/mapping").status_code == 204
         assert client.post("/rules", json={"name": "alert", "enabled": True, "source": "transfer", "level": "normal",
                                            "push": True, "conditions": {"min_usd": 200}}).status_code == 201
-        with app.state.store.begin() as db:
-            for entities in ([("a", 1), ("b", 1)], [("b", 2), ("c", 1)]):
-                snapshot = Snapshot(interval="7d", pricing_ids=["abc", "def"], truncated=False)
-                db.add(snapshot)
-                db.flush()
-                db.add_all(SnapshotRow(snapshot_id=snapshot.id, entity_id=entity, balance_unit=amount)
-                           for entity, amount in entities)
-        assert len(client.get("/snapshots/1").json()["rows"]) == 2
-        comparison = client.get("/snapshots/compare?before=1&after=2").json()
-        assert [row["entity_id"] for row in comparison["added"]] == ["c"]
-        assert [row["entity_id"] for row in comparison["removed"]] == ["a"]
-        assert comparison["changed"][0]["after"]["balance_unit"] == 2
         fake.responses.append({"transfers": [transfer("selected"), transfer("other", 100)]})
         with client.websocket_connect("/ws/events", headers=headers) as ws:
             asyncio.run(app.state.collectors.transfers(SimpleNamespace(coin_id="ABC", account_id="a", interval_seconds=60)))

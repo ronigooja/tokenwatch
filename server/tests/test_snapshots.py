@@ -155,12 +155,13 @@ def test_in_flight_snapshot_keeps_requested_identity_and_does_not_catch_up(core,
         assert db.get(Job, job_id).next_run == 1501
         old = db.get(SnapshotCapture, "abc")
         assert old.last_captured_at == datetime.utcfromtimestamp(1300) and old.last_symbol == "ABC"
+        snapshot_id = db.scalars(select(Snapshot.id).where(Snapshot.automatic_pricing_id == "abc")).one()
     app = create_app(settings, run_scheduler=False)
     with TestClient(app, headers={"Authorization": "Bearer test-token"}) as client:
         snapshots = {row["id"]: row for row in client.get("/snapshot-coins").json()}
         assert snapshots["abc"]["symbol"] == "ABC" and snapshots["abc"]["snapshot_count"] == 1
         assert snapshots["different"]["symbol"] == "NEW"
-        assert [row["pricing_ids"] for row in client.get("/snapshots", params={"coin_id": "abc"}).json()] == [["abc"]]
+        assert [row["id"] for row in client.get("/snapshots", params={"coin_id": "abc"}).json()] == [snapshot_id]
 
 
 def test_generic_failure_after_reservation_keeps_next_slot(core, settings):
@@ -220,7 +221,7 @@ def test_snapshot_api_filters_and_jobs(settings):
     headers = {"Authorization": "Bearer test-token"}
     captured_at = datetime(2026, 1, 1)
     # Treat the API identifier as opaque, including characters outside the CoinRef allowlist.
-    exact_id = "AbC+/ Ω"
+    exact_id = " AbC+/ Ω "
     with TestClient(app) as client:
         assert client.get("/snapshot-coins").status_code == 401
         client.headers.update(headers)
@@ -234,10 +235,14 @@ def test_snapshot_api_filters_and_jobs(settings):
                 SnapshotCapture(pricing_id=exact_id, last_attempt_at=1000, last_captured_at=captured_at, last_symbol="AAA"),
                 SnapshotCapture(pricing_id="lost", last_attempt_at=1000, last_captured_at=captured_at, last_symbol="OLD"),
                 SnapshotCapture(pricing_id="expired", last_attempt_at=1000, last_captured_at=captured_at, last_symbol="OLD"),
-                Snapshot(id=1, interval="14d", pricing_ids=[exact_id], truncated=False),
                 Snapshot(id=2, interval="7d", pricing_ids=[exact_id], automatic_pricing_id=exact_id, truncated=False),
                 Snapshot(id=3, interval="7d", pricing_ids=["lost"], automatic_pricing_id="lost", truncated=False),
                 Snapshot(id=4, interval="7d", pricing_ids=[exact_id], automatic_pricing_id=exact_id, truncated=False),
+            ])
+            db.flush()
+            db.add_all([
+                SnapshotRow(snapshot_id=2, entity_id="z"),
+                SnapshotRow(snapshot_id=2, entity_id="a", balance_unit=7, prev_balance_unit=3, token_balances=[]),
             ])
         assert client.get("/snapshot-coins").json() == [
             {"id": exact_id, "symbol": "AAA", "last_captured_at": "2026-01-01T00:00:00Z", "snapshot_count": 2},
@@ -245,13 +250,27 @@ def test_snapshot_api_filters_and_jobs(settings):
             {"id": "expired", "symbol": "DDD", "last_captured_at": "2026-01-01T00:00:00Z", "snapshot_count": 0},
             {"id": "lost", "symbol": "OLD", "last_captured_at": "2026-01-01T00:00:00Z", "snapshot_count": 1},
         ]
-        for params, ids in (({}, [4, 3, 2, 1]), ({"coin_id": exact_id}, [4, 2]),
+        for params, ids in (({"coin_id": exact_id}, [4, 2]),
                             ({"coin_id": exact_id, "limit": 1, "offset": 1}, [2]),
-                            ({"coin_id": exact_id.lower()}, []), ({"coin_id": "lost"}, [3]), ({"legacy": True}, [1])):
+                            ({"coin_id": exact_id.lower()}, []), ({"coin_id": exact_id.strip()}, []),
+                            ({"coin_id": "lost"}, [3])):
             assert [item["id"] for item in client.get("/snapshots", params=params).json()] == ids
-        assert client.get("/snapshots", params={"coin_id": exact_id, "legacy": True}).status_code == 422
-        assert client.get("/snapshots/2").json()["pricing_ids"] == [exact_id]
-        assert client.get("/snapshots/1").json()["interval"] == "14d"
+        for params in ({}, {"legacy": True}):
+            missing = client.get("/snapshots", params=params)
+            assert missing.status_code == 422 and missing.json()["detail"][0]["loc"] == ["query", "coin_id"]
+        paths = app.openapi()["paths"]
+        assert {param["name"] for param in paths["/snapshots"]["get"]["parameters"]} == {"coin_id", "limit", "offset"}
+        assert "/snapshots/compare" not in paths
+        assert client.get("/snapshots/compare?before=2&after=4").status_code == 422
+        detail = client.get("/snapshots/2").json()
+        summary = client.get("/snapshots", params={"coin_id": exact_id, "offset": 1}).json()[0]
+        assert set(summary) == {"id", "created_at", "interval", "truncated"}
+        rows = detail.pop("rows")
+        assert detail == summary and summary["interval"] == "7d"
+        assert [row["entity_id"] for row in rows] == ["a", "z"]
+        assert rows[0] == {"entity_id": "a", "entity_name": None, "entity_type": None, "balance_unit": 7,
+                           "balance_usd": None, "prev_balance_unit": 3, "prev_balance_usd": None}
+        assert client.get("/snapshots/1").status_code == 404
         assert client.post("/snapshots", json={}).status_code == 405
         job, = client.get("/jobs").json()
         assert job["kind"] == "snapshots" and job["enabled"]
@@ -264,7 +283,7 @@ def test_snapshot_api_filters_and_jobs(settings):
         assert client.post("/jobs", json=update).status_code == 409
 
 
-def test_v8_migration_preserves_manual_snapshots_and_seeds_once(settings):
+def test_v8_migration_removes_manual_snapshots_and_seeds_once(settings):
     store = open_store(settings.database)
     with store.begin() as db:
         db.add(Snapshot(id=7, interval="30d", pricing_ids=["legacy"], truncated=False, balance_min=1.5))
@@ -280,10 +299,9 @@ def test_v8_migration_preserves_manual_snapshots_and_seeds_once(settings):
     store.kw["bind"].dispose()
     migrated = open_store(settings.database)
     with migrated.begin() as db:
-        assert db.scalar(text("PRAGMA user_version")) == 9
-        legacy = db.get(Snapshot, 7)
-        assert legacy.automatic_pricing_id is None and legacy.balance_min == 1.5 and legacy.pricing_ids == ["legacy"]
-        assert db.get(SnapshotRow, (7, "entity"))
+        assert db.scalar(text("PRAGMA user_version")) == 10
+        assert db.get(Snapshot, 7) is None
+        assert db.get(SnapshotRow, (7, "entity")) is None
         job = db.scalar(select(Job).where(Job.kind == "snapshots"))
         assert job.enabled and job.interval_seconds == 604800
         db.delete(job)
@@ -292,3 +310,58 @@ def test_v8_migration_preserves_manual_snapshots_and_seeds_once(settings):
     with reopened() as db:
         assert db.scalar(select(Job).where(Job.kind == "snapshots")) is None
     reopened.kw["bind"].dispose()
+
+
+def test_v9_migration_removes_only_manual_snapshots_and_their_rows(settings):
+    store = open_store(settings.database)
+    captured_at = datetime(2026, 1, 1)
+    with store.begin() as db:
+        db.add_all([
+            Snapshot(id=1, interval="30d", pricing_ids=["AbC"], balance_min=1.5, truncated=False),
+            Snapshot(id=2, interval="7d", pricing_ids=["AbC"], automatic_pricing_id="AbC", truncated=True,
+                     created_at=captured_at),
+            Snapshot(id=3, interval="14d", truncated=False),
+            Snapshot(id=4, interval="7d", pricing_ids=["AbC"], automatic_pricing_id="AbC", truncated=False),
+        ])
+        db.flush()
+        db.add_all([
+            SnapshotRow(snapshot_id=1, entity_id="shared"),
+            SnapshotRow(snapshot_id=1, entity_id="manual"),
+            SnapshotRow(snapshot_id=2, entity_id="shared", balance_unit=10, token_balances={"AbC": 10}),
+            SnapshotRow(snapshot_id=3, entity_id="shared"),
+            SnapshotRow(snapshot_id=4, entity_id="shared", prev_balance_unit=10),
+        ])
+        db.add_all([
+            SnapshotCapture(pricing_id="AbC", last_attempt_at=1000, last_captured_at=captured_at, last_symbol="ABC"),
+            SnapshotCapture(pricing_id="failed", last_attempt_at=1100),
+        ])
+        schedule = db.get(SnapshotSchedule, 1)
+        schedule.next_slot_at, schedule.pending_spacing = 1200, 100
+        job = db.scalar(select(Job).where(Job.kind == "snapshots"))
+        job.enabled, job.interval_seconds, job.next_run, job.wait_reason = False, 600, 1250, "test_wait"
+        db.execute(text("PRAGMA user_version=9"))
+    store.kw["bind"].dispose()
+
+    for _ in range(2):
+        migrated = open_store(settings.database)
+        with migrated() as db:
+            assert db.scalar(text("PRAGMA user_version")) == 10
+            assert db.scalar(text("PRAGMA foreign_keys")) == 1
+            assert db.execute(text("PRAGMA foreign_key_check")).all() == []
+            first, second = db.scalars(select(Snapshot).order_by(Snapshot.id)).all()
+            assert (first.id, first.automatic_pricing_id, first.pricing_ids, first.created_at, first.truncated) == (
+                2, "AbC", ["AbC"], captured_at, True)
+            assert (second.id, second.automatic_pricing_id, second.truncated) == (4, "AbC", False)
+            rows = db.scalars(select(SnapshotRow).order_by(SnapshotRow.snapshot_id)).all()
+            assert [(row.snapshot_id, row.entity_id, row.balance_unit, row.prev_balance_unit, row.token_balances)
+                    for row in rows] == [(2, "shared", 10, None, {"AbC": 10}), (4, "shared", None, 10, None)]
+            capture, failed = db.scalars(select(SnapshotCapture).order_by(SnapshotCapture.pricing_id)).all()
+            assert (capture.pricing_id, capture.last_attempt_at, capture.last_captured_at, capture.last_symbol) == (
+                "AbC", 1000, captured_at, "ABC")
+            assert (failed.pricing_id, failed.last_attempt_at, failed.last_captured_at, failed.last_symbol) == (
+                "failed", 1100, None, None)
+            schedule = db.get(SnapshotSchedule, 1)
+            assert (schedule.next_slot_at, schedule.pending_spacing) == (1200, 100)
+            job = db.scalars(select(Job).where(Job.kind == "snapshots")).one()
+            assert (job.enabled, job.interval_seconds, job.next_run, job.wait_reason) == (False, 600, 1250, "test_wait")
+        migrated.kw["bind"].dispose()

@@ -57,7 +57,7 @@ The database reserves a slot with account spacing before dispatch, using `interv
 
 `GET /snapshot-coins` lists eligible pricing IDs and ineligible IDs with retained automatic history. Eligible IDs use the lexicographically smallest eligible symbol; ineligible IDs use the symbol recorded at their last successful capture. Each item includes the most recent successful capture time (or null) and the retained snapshot count; an eligible ID can have a capture time and zero remaining snapshots. Only eligible IDs are scheduled. With no eligible ID, the job reports `no_eligible_snapshot_coin` and checks again on the next scheduler tick without making upstream requests.
 
-`GET /snapshots?coin_id=…` matches the exact pricing ID on automatic snapshots, including records for IDs no longer eligible. `GET /snapshots?legacy=true` lists only nonautomatic snapshots; it cannot be combined with `coin_id`. With neither filter, the list includes both. Lists of snapshots accept `limit` and `offset`; detail and two-snapshot comparison use stored snapshot IDs.
+`GET /snapshots?coin_id=…` requires the exact, opaque pricing ID from `/snapshot-coins`, including IDs no longer eligible. It returns newest snapshots first and accepts `limit` and `offset`. `GET /snapshots/{snapshot_id}` returns the snapshot and its entity rows.
 
 ## Session status
 

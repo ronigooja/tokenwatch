@@ -283,12 +283,3 @@ class Collectors:
             capture = db.get(SnapshotCapture, pricing_id)
             capture.last_captured_at, capture.last_symbol = captured_at, reserved_symbol
             return db.get(SnapshotSchedule, 1).next_slot_at
-
-
-def snapshot_diff(before, after):
-    old = {row["entity_id"]: row for row in before}
-    new = {row["entity_id"]: row for row in after}
-    return {"added": [new[key] for key in sorted(new.keys() - old.keys())],
-            "removed": [old[key] for key in sorted(old.keys() - new.keys())],
-            "changed": [{"before": old[key], "after": new[key]} for key in sorted(old.keys() & new.keys())
-                        if old[key] != new[key]]}

@@ -2607,6 +2607,15 @@
         ],
         "parameters": [
           {
+            "name": "coin_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Coin Id"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -2628,32 +2637,6 @@
               "default": 0,
               "title": "Offset"
             }
-          },
-          {
-            "name": "coin_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Coin Id"
-            }
-          },
-          {
-            "name": "legacy",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "boolean",
-              "default": false,
-              "title": "Legacy"
-            }
           }
         ],
         "responses": {
@@ -2667,59 +2650,6 @@
                     "$ref": "#/components/schemas/SnapshotOut"
                   },
                   "title": "Response List Snapshots Snapshots Get"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/snapshots/compare": {
-      "get": {
-        "summary": "Compare Snapshots",
-        "operationId": "compare_snapshots_snapshots_compare_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "before",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "title": "Before"
-            }
-          },
-          {
-            "name": "after",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "title": "After"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SnapshotDiff"
                 }
               }
             }
@@ -3276,23 +3206,6 @@
           "conflict"
         ],
         "title": "ChainObservationOut"
-      },
-      "ChangedRow": {
-        "properties": {
-          "before": {
-            "$ref": "#/components/schemas/SnapshotRowOut"
-          },
-          "after": {
-            "$ref": "#/components/schemas/SnapshotRowOut"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "before",
-          "after"
-        ],
-        "title": "ChangedRow"
       },
       "CoinOut": {
         "properties": {
@@ -4346,31 +4259,6 @@
             ],
             "title": "Interval"
           },
-          "balance_min": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Balance Min"
-          },
-          "pricing_ids": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Pricing Ids"
-          },
           "truncated": {
             "type": "boolean",
             "title": "Truncated"
@@ -4389,45 +4277,10 @@
           "id",
           "created_at",
           "interval",
-          "balance_min",
-          "pricing_ids",
           "truncated",
           "rows"
         ],
         "title": "SnapshotDetail"
-      },
-      "SnapshotDiff": {
-        "properties": {
-          "added": {
-            "items": {
-              "$ref": "#/components/schemas/SnapshotRowOut"
-            },
-            "type": "array",
-            "title": "Added"
-          },
-          "removed": {
-            "items": {
-              "$ref": "#/components/schemas/SnapshotRowOut"
-            },
-            "type": "array",
-            "title": "Removed"
-          },
-          "changed": {
-            "items": {
-              "$ref": "#/components/schemas/ChangedRow"
-            },
-            "type": "array",
-            "title": "Changed"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "added",
-          "removed",
-          "changed"
-        ],
-        "title": "SnapshotDiff"
       },
       "SnapshotOut": {
         "properties": {
@@ -4449,31 +4302,6 @@
             ],
             "title": "Interval"
           },
-          "balance_min": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Balance Min"
-          },
-          "pricing_ids": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Pricing Ids"
-          },
           "truncated": {
             "type": "boolean",
             "title": "Truncated"
@@ -4485,8 +4313,6 @@
           "id",
           "created_at",
           "interval",
-          "balance_min",
-          "pricing_ids",
           "truncated"
         ],
         "title": "SnapshotOut"
@@ -4562,22 +4388,6 @@
               }
             ],
             "title": "Prev Balance Usd"
-          },
-          "token_balances": {
-            "anyOf": [
-              {
-                "items": {},
-                "type": "array"
-              },
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Token Balances"
           }
         },
         "additionalProperties": false,
@@ -4589,8 +4399,7 @@
           "balance_unit",
           "balance_usd",
           "prev_balance_unit",
-          "prev_balance_usd",
-          "token_balances"
+          "prev_balance_usd"
         ],
         "title": "SnapshotRowOut"
       },

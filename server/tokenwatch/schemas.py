@@ -317,8 +317,6 @@ class SnapshotOut(Schema):
     id: int
     created_at: UTCDateTime
     interval: Interval
-    balance_min: float | None
-    pricing_ids: list[str] | None
     truncated: bool
 
 
@@ -330,22 +328,10 @@ class SnapshotRowOut(Schema):
     balance_usd: float | None
     prev_balance_unit: float | None
     prev_balance_usd: float | None
-    token_balances: list | dict | None
 
 
 class SnapshotDetail(SnapshotOut):
     rows: list[SnapshotRowOut]
-
-
-class ChangedRow(Schema):
-    before: SnapshotRowOut
-    after: SnapshotRowOut
-
-
-class SnapshotDiff(Schema):
-    added: list[SnapshotRowOut]
-    removed: list[SnapshotRowOut]
-    changed: list[ChangedRow]
 
 
 class EntityBalanceOut(Schema):
