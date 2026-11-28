@@ -14,7 +14,7 @@ from tokenwatch.api import create_app
 from tokenwatch.collectors import Collectors
 from tokenwatch.config import Settings, load_settings
 from tokenwatch.db import (Account, Coin, DailyBalance, DailyCollection, Event, Exclusion,
-                           Job, PushLog, Rule, Subscription, Transfer, TransferCursor, open_store)
+                           Job, PushLog, Rule, Snapshot, SnapshotRow, Subscription, Transfer, TransferCursor, open_store)
 from tokenwatch.scheduler import AccountUnavailable, RequestGate, Scheduler
 from tokenwatch.upstream import AuthRequired, BadResponse, Blocked, RateLimited, RequestRejected
 
@@ -270,7 +270,7 @@ def test_config_environment_and_migration(settings, tmp_path, monkeypatch):
         store = open_store(loaded.database)
         with store() as db:
             assert db.scalar(text("PRAGMA journal_mode")) == "wal"
-            assert db.scalar(text("PRAGMA user_version")) == 8
+            assert db.scalar(text("PRAGMA user_version")) == 9
         store.kw["bind"].dispose()
 
 
@@ -361,7 +361,7 @@ def test_scheduler_pauses_and_respects_backoff(core, settings, error):
             assert account.status == "paused"
             assert account.pause_reason == type(error).__name__
             assert account.available_at == 1000 + (90 if isinstance(error, RateLimited) else 20)
-            assert db.scalar(select(Job.next_run)) == account.available_at
+            assert db.scalar(select(Job.next_run).where(Job.kind == "daily")) == account.available_at
             assert db.scalar(select(Event.kind)) == "account_paused"
         with pytest.raises(AccountUnavailable):
             await gate.get("a", "/path", {})
@@ -458,22 +458,13 @@ def test_daily_truncation_exclusion_and_balance_rule(core):
 
 
 @pytest.mark.parametrize("value", [100000, 100000.0, 100000.5, -1, True])
-def test_snapshot_and_job_balance_min_validation(settings, value):
+def test_job_balance_min_validation(settings, value):
     fake = FakeUpstream()
     app = create_app(settings, fake, catalog_transport=httpx.MockTransport(lambda request: httpx.Response(500)), run_scheduler=False)
     with TestClient(app, headers={"Authorization": "Bearer test-token"}) as client:
         with app.state.store.begin() as db:
             db.add(Account(id="a", proxy_ref="p"))
         valid = type(value) is not bool and value >= 0 and value == int(value)
-        if valid:
-            fake.responses.append([])
-        response = client.post("/snapshots", json={"account_id": "a", "pricing_ids": ["abc"], "balance_min": value})
-        assert response.status_code == (201 if valid else 422)
-        if valid:
-            assert fake.calls[0][2]["balanceMin"] == "100000"
-            assert response.json()["balance_min"] == 100000.0
-        else:
-            assert not fake.calls
         response = client.post("/jobs", json={"kind": "daily", "account_id": "a", "interval_seconds": 60,
                                                "options": {"balance_min": value}})
         assert response.status_code == (201 if valid else 422)
@@ -502,7 +493,6 @@ def test_stored_daily_balance_min_through_scheduler(core, settings, value):
 
 
 def test_snapshot_old_float_row_serializes(settings):
-    from tokenwatch.db import Snapshot
     app = create_app(settings, run_scheduler=False)
     with TestClient(app, headers={"Authorization": "Bearer test-token"}) as client:
         with app.state.store.begin() as db:
@@ -538,7 +528,7 @@ def test_transfer_rules_cooldown_merge_and_filters(core):
 
 def test_api_crud_snapshots_filters_and_socket(settings):
     fake = FakeUpstream()
-    fake.responses.extend([{"id": "user"}, [balance("a"), balance("b")], [balance("b", 2), balance("c")]])
+    fake.responses.append({"id": "user"})
     app = create_app(settings, fake, catalog_transport=httpx.MockTransport(lambda request: httpx.Response(500)), run_scheduler=False)
     headers = {"Authorization": "Bearer test-token"}
     with TestClient(app) as client:
@@ -563,10 +553,13 @@ def test_api_crud_snapshots_filters_and_socket(settings):
         assert client.delete("/coins/ABC/mapping").status_code == 204
         assert client.post("/rules", json={"name": "alert", "enabled": True, "source": "transfer", "level": "normal",
                                            "push": True, "conditions": {"min_usd": 200}}).status_code == 201
-        for _ in range(2):
-            response = client.post("/snapshots", json={"account_id": "a", "pricing_ids": ["abc", "def"]})
-            assert response.status_code == 201, response.text
-        assert fake.calls[1][2]["pricingIds"] == "abc,def"
+        with app.state.store.begin() as db:
+            for entities in ([("a", 1), ("b", 1)], [("b", 2), ("c", 1)]):
+                snapshot = Snapshot(interval="7d", pricing_ids=["abc", "def"], truncated=False)
+                db.add(snapshot)
+                db.flush()
+                db.add_all(SnapshotRow(snapshot_id=snapshot.id, entity_id=entity, balance_unit=amount)
+                           for entity, amount in entities)
         assert len(client.get("/snapshots/1").json()["rows"]) == 2
         comparison = client.get("/snapshots/compare?before=1&after=2").json()
         assert [row["entity_id"] for row in comparison["added"]] == ["c"]
@@ -615,12 +608,12 @@ def test_job_failure_logging_and_recovery(core, settings, caplog):
 
     scheduler = Scheduler(store, settings, {"coin_catalog": handler}, clock)
     with store() as db:
-        job = db.get(Job, 1)
+        job = db.scalar(select(Job).where(Job.kind == "coin_catalog"))
     asyncio.run(scheduler.run_job(job))
     with store() as db:
-        assert db.get(Job, 1).last_error == "BadResponse:503 on /intelligence/search"
-        job = db.get(Job, 1)
-    assert "job_id=1 job_kind=coin_catalog endpoint=/intelligence/search exception=BadResponse status=503" in caplog.text
+        job = db.get(Job, job.id)
+        assert job.last_error == "BadResponse:503 on /intelligence/search"
+    assert f"job_id={job.id} job_kind=coin_catalog endpoint=/intelligence/search exception=BadResponse status=503" in caplog.text
     message = caplog.records[-1].getMessage()
     assert all(secret not in message for secret in ("secret", "cookie", "header", "token", "query="))
     async def success(job):
@@ -628,7 +621,7 @@ def test_job_failure_logging_and_recovery(core, settings, caplog):
     scheduler.handlers["coin_catalog"] = success
     asyncio.run(scheduler.run_job(job))
     with store() as db:
-        assert db.get(Job, 1).last_error is None
+        assert db.get(Job, job.id).last_error is None
 
 
 def test_failure_endpoint_and_http_status_are_sanitized(caplog):

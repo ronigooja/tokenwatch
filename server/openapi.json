@@ -2569,48 +2569,34 @@
         }
       }
     },
-    "/snapshots": {
-      "post": {
-        "summary": "Create Snapshot",
-        "operationId": "create_snapshot_snapshots_post",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SnapshotInput"
-              }
-            }
-          }
-        },
+    "/snapshot-coins": {
+      "get": {
+        "summary": "List Snapshot Coins",
+        "operationId": "list_snapshot_coins_snapshot_coins_get",
         "responses": {
-          "201": {
+          "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SnapshotOut"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "items": {
+                    "$ref": "#/components/schemas/SnapshotCoinOut"
+                  },
+                  "type": "array",
+                  "title": "Response List Snapshot Coins Snapshot Coins Get"
                 }
               }
             }
           }
-        }
-      },
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/snapshots": {
       "get": {
         "summary": "List Snapshots",
         "operationId": "list_snapshots_snapshots_get",
@@ -2641,6 +2627,32 @@
               "minimum": 0,
               "default": 0,
               "title": "Offset"
+            }
+          },
+          {
+            "name": "coin_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Coin Id"
+            }
+          },
+          {
+            "name": "legacy",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Legacy"
             }
           }
         ],
@@ -3744,7 +3756,8 @@
             "enum": [
               "transfers",
               "daily",
-              "coin_catalog"
+              "coin_catalog",
+              "snapshots"
             ],
             "title": "Kind"
           },
@@ -3820,7 +3833,8 @@
             "enum": [
               "transfers",
               "daily",
-              "coin_catalog"
+              "coin_catalog",
+              "snapshots"
             ],
             "title": "Kind"
           },
@@ -4275,6 +4289,43 @@
         ],
         "title": "RuleOut"
       },
+      "SnapshotCoinOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "symbol": {
+            "type": "string",
+            "title": "Symbol"
+          },
+          "last_captured_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Captured At"
+          },
+          "snapshot_count": {
+            "type": "integer",
+            "title": "Snapshot Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "symbol",
+          "last_captured_at",
+          "snapshot_count"
+        ],
+        "title": "SnapshotCoinOut"
+      },
       "SnapshotDetail": {
         "properties": {
           "id": {
@@ -4377,60 +4428,6 @@
           "changed"
         ],
         "title": "SnapshotDiff"
-      },
-      "SnapshotInput": {
-        "properties": {
-          "account_id": {
-            "type": "string",
-            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$",
-            "title": "Account Id"
-          },
-          "interval": {
-            "type": "string",
-            "enum": [
-              "7d",
-              "14d",
-              "30d"
-            ],
-            "title": "Interval",
-            "default": "7d"
-          },
-          "balance_min": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Balance Min"
-          },
-          "pricing_ids": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string",
-                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_@+.-]{0,127}$"
-                },
-                "type": "array",
-                "maxItems": 50,
-                "minItems": 1
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Pricing Ids"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "account_id"
-        ],
-        "title": "SnapshotInput"
       },
       "SnapshotOut": {
         "properties": {

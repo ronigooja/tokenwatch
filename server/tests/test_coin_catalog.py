@@ -725,22 +725,24 @@ def test_distributed_selection_failover_and_wait(core, settings):
         return clock()
 
     scheduler = Scheduler(store, settings, {"daily": handler}, clock)
+    with store() as db:
+        job_id = db.scalar(select(Job.id).where(Job.kind == "daily"))
 
     async def run():
         scheduler.tick()
-        await scheduler.running[1]
+        await scheduler.running[job_id]
         assert [call[0] for call in fake.calls] == ["b", "a"]
         scheduler.tick()
-        await scheduler.running[1]
+        await scheduler.running[job_id]
         with store.begin() as db:
-            job = db.get(Job, 1)
+            job = db.get(Job, job_id)
             assert job.wait_reason == "waiting_for_account_request_gate"
             clock.value = job.next_run
             db.get(Account, "a").status = "paused"
         scheduler.tick()
-        await scheduler.running[1]
+        await scheduler.running[job_id]
         with store() as db:
-            assert db.get(Job, 1).wait_reason == "no_eligible_account"
+            assert db.get(Job, job_id).wait_reason == "no_eligible_account"
         assert len(fake.calls) == 2
 
     asyncio.run(run())
@@ -839,8 +841,9 @@ def test_api_accountless_catalog_rules_and_native_override(settings):
         with app.state.store.begin() as db:
             db.add(Coin(id="native:BTC", symbol="BTC", sources=["spot"], status="needs_manual_mapping"))
         job = {"kind": "daily", "interval_seconds": 60, "options": {"balance_min": 100}, "account_id": None}
-        assert client.post("/jobs", json=job).json()["account_id"] is None
-        assert client.put("/jobs/1", json=job).status_code == 200
+        created = client.post("/jobs", json=job).json()
+        assert created["account_id"] is None
+        assert client.put(f"/jobs/{created['id']}", json=job).status_code == 200
         assert client.put("/coins/native:BTC/mapping", json={"pricing_id": "bitcoin"}).status_code == 200
         assert client.get("/coins", params={"status": "pending_support"}).json()[0]["id"] == "native:BTC"
         assert client.put("/coin-catalog/futures-mappings/1000SHIB", json={"symbol": "SHIB"}).status_code == 200
@@ -908,8 +911,8 @@ def test_schema_reset_preserves_history_and_jobs(settings):
                     Event(dedupe_key="e", kind="alarm", coin_id="OLD", level="normal", push=True, data={})])
         db.flush()
         db.add_all([TransferCoin(transfer_id="tx", coin_id="OLD"), PushLog(event_id=1),
-                    Job(kind="transfers", account_id="a", coin_id="OLD", enabled=True, interval_seconds=60),
-                    Job(kind="daily", account_id="a", enabled=True, interval_seconds=60),
+                     Job(id=2, kind="transfers", account_id="a", coin_id="OLD", enabled=True, interval_seconds=60),
+                     Job(id=3, kind="daily", account_id="a", enabled=True, interval_seconds=60),
                     DailyCollection(day=now().date(), coin_id="OLD", truncated=False)])
     with store.begin() as db:
         db.execute(text("ALTER TABLE accounts DROP COLUMN last_used_at"))
@@ -922,8 +925,8 @@ def test_schema_reset_preserves_history_and_jobs(settings):
         assert db.get(TransferCoin, ("tx", "OLD")) and db.get(Transfer, "tx")
         assert db.get(Event, 1).coin_id == "OLD" and db.get(PushLog, 1).event_id == 1
         assert db.get(Snapshot, 1) and db.get(Account, "a")
-        assert not db.get(Job, 1).enabled and db.get(Job, 1).wait_reason == "coin_reassignment_required"
-        assert db.get(Job, 2).enabled
+        assert not db.get(Job, 2).enabled and db.get(Job, 2).wait_reason == "coin_reassignment_required"
+        assert db.get(Job, 3).enabled
         assert db.execute(text("PRAGMA foreign_key_check")).all() == []
         assert db.scalar(text("PRAGMA foreign_keys")) == 1
     migrated.kw["bind"].dispose()
@@ -1027,7 +1030,7 @@ def test_migrate_v4_preserves_coin(tmp_path):
     store = open_store(path)
     with store() as db:
         assert db.get(Coin, "old").searched_deployments == []
-        assert db.scalar(text("PRAGMA user_version")) == 8
+        assert db.scalar(text("PRAGMA user_version")) == 9
     store.kw["bind"].dispose()
 
 
@@ -1050,7 +1053,7 @@ def test_migrate_v6_preserves_data(tmp_path):
         coin = db.get(Coin, "old")
         assert (coin.symbol, coin.status, coin.pricing_id, coin.price_check_status) == ("OLD", "supported", "old", None)
         assert db.get(CatalogSettings, "matching").failure_limit == 3
-        assert db.scalar(text("PRAGMA user_version")) == 8
+        assert db.scalar(text("PRAGMA user_version")) == 9
     store.kw["bind"].dispose()
 
 
@@ -1077,7 +1080,7 @@ def test_migrate_v7_clears_results_and_drops_evidence(tmp_path):
         assert (old.symbol, old.status, old.pricing_id, old.price_check_status) == ("OLD", "supported", "old", None)
         assert manual.price_check_status == "manual"
         assert manual.price_check_ratio is None and manual.price_checked_at is None
-        assert db.scalar(text("PRAGMA user_version")) == 8
+        assert db.scalar(text("PRAGMA user_version")) == 9
         columns = {row[1] for row in db.execute(text("PRAGMA table_info(coins)"))}
         assert not columns.intersection({"arkham_price", "arkham_price_at", "arkham_chains", "chain_check_status"})
     store.kw["bind"].dispose()

@@ -2,11 +2,12 @@ import math
 import time
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from .db import (Coin, DailyBalance, DailyCollection, Exclusion, Snapshot, SnapshotRow,
+from .db import (Coin, DailyBalance, DailyCollection, Exclusion, Job, Snapshot, SnapshotCapture, SnapshotRow, SnapshotSchedule,
                  Subscription, Transfer, TransferCoin, TransferCursor, now)
 from .rules import alert, evaluate
+from .scheduler import DistributionWait
 from .upstream import BadResponse
 
 
@@ -98,6 +99,11 @@ def parse_transfers(payload):
 def eligible_coins():
     return select(Coin).where(Coin.status == "supported", Coin.pricing_id.is_not(None),
                               ~select(Exclusion.coin_id).where(Exclusion.coin_id == Coin.id).exists())
+
+
+def snapshot_coins():
+    return eligible_coins().with_only_columns(Coin.pricing_id.label("id"), func.min(Coin.symbol).label("symbol")).where(
+        Coin.pricing_id != "").group_by(Coin.pricing_id).subquery()
 
 
 class Collectors:
@@ -210,15 +216,71 @@ class Collectors:
                     "direction": "increase" if (unit_change or usd_change) > 0 else "decrease",
                 })
 
-    async def snapshot(self, account_id, interval, balance_min, pricing_ids):
-        rows = await self.gate.get(account_id, BALANCE_PATH, balance_params(interval, balance_min, pricing_ids), parse_balances)
+    async def snapshots(self, job):
+        stamp = self.clock()
+        coins = snapshot_coins()
         with self.store.begin() as db:
-            snapshot = Snapshot(interval=interval, balance_min=balance_min, pricing_ids=pricing_ids,
-                                truncated=len(rows) == BALANCE_LIMIT)
+            schedule = db.get(SnapshotSchedule, 1)
+            if schedule.pending_spacing is not None:
+                # A previous process stopped after dispatch reservation but before
+                # settling. The send time is unknown; wait a full slot from recovery.
+                schedule.next_slot_at = max(schedule.next_slot_at, stamp + schedule.pending_spacing)
+                schedule.pending_spacing = None
+            next_slot = schedule.next_slot_at
+        if next_slot > stamp:
+            raise DistributionWait("waiting_for_snapshot_slot", next_slot)
+        with self.store() as db:
+            pricing_id = db.scalar(select(coins.c.id).outerjoin(
+                SnapshotCapture, SnapshotCapture.pricing_id == coins.c.id).order_by(
+                SnapshotCapture.last_attempt_at, coins.c.id).limit(1))
+        if pricing_id is None:
+            raise DistributionWait("no_eligible_snapshot_coin", stamp)
+
+        reserved = False
+
+        def reserve(db, stamp):
+            nonlocal reserved
+            current = db.get(Job, job.id)
+            if not current or not current.enabled or current.kind != job.kind or current.interval_seconds != job.interval_seconds:
+                raise DistributionWait("snapshot_job_reconfigured", stamp)
+            schedule = db.get(SnapshotSchedule, 1)
+            if schedule.next_slot_at > stamp:
+                raise DistributionWait("waiting_for_snapshot_slot", schedule.next_slot_at)
+            if db.scalar(select(coins.c.id).where(coins.c.id == pricing_id)) is None:
+                raise DistributionWait("snapshot_coin_no_longer_eligible", stamp)
+            # Reserve the slot and rotate the target in the same commit as account spacing,
+            # before any upstream work. Failures and process interruption still consume it.
+            spacing = current.interval_seconds / db.scalar(select(func.count()).select_from(coins))
+            schedule.next_slot_at = stamp + spacing
+            schedule.pending_spacing = spacing
+            reserved = True
+            if (capture := db.get(SnapshotCapture, pricing_id)) is None:
+                db.add(SnapshotCapture(pricing_id=pricing_id, last_attempt_at=stamp))
+            else:
+                capture.last_attempt_at = stamp
+
+        interval = "7d"
+        try:
+            rows = await self.gate.get(None, BALANCE_PATH, balance_params(interval, None, [pricing_id]), parse_balances,
+                                       single=True, reserve=reserve)
+        finally:
+            if reserved:
+                # Browser readiness can delay the physical fetch after dispatch. Do not
+                # let that delay leave the next account with an already overdue slot.
+                with self.store.begin() as db:
+                    schedule = db.get(SnapshotSchedule, 1)
+                    if schedule.pending_spacing is not None:
+                        schedule.next_slot_at = max(schedule.next_slot_at, self.clock() + schedule.pending_spacing)
+                        schedule.pending_spacing = None
+        with self.store.begin() as db:
+            captured_at = datetime.fromtimestamp(self.clock(), timezone.utc).replace(tzinfo=None)
+            snapshot = Snapshot(interval=interval, pricing_ids=[pricing_id], automatic_pricing_id=pricing_id,
+                                created_at=captured_at, truncated=len(rows) == BALANCE_LIMIT)
             db.add(snapshot)
             db.flush()
             db.add_all(SnapshotRow(snapshot_id=snapshot.id, **row) for row in rows)
-            return snapshot
+            db.get(SnapshotCapture, pricing_id).last_captured_at = captured_at
+            return db.get(SnapshotSchedule, 1).next_slot_at
 
 
 def snapshot_diff(before, after):

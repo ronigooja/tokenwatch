@@ -19,7 +19,7 @@ def test_shutdown_drains_without_penalty(tmp_path, caplog, outcome, account_id):
         store = open_store(settings.database)
         with store.begin() as db:
             db.add(Account(id="a", proxy_ref="p", failures=2))
-            db.add(Job(id=1, kind="daily", account_id=account_id, interval_seconds=604800,
+            db.add(Job(id=2, kind="daily", account_id=account_id, interval_seconds=604800,
                        next_run=0, enabled=True, last_error="previous"))
         started, release = asyncio.Event(), asyncio.Event()
 
@@ -52,7 +52,7 @@ def test_shutdown_drains_without_penalty(tmp_path, caplog, outcome, account_id):
             release.set()
         await drain
         with store() as db:
-            account, job = db.get(Account, "a"), db.get(Job, 1)
+            account, job = db.get(Account, "a"), db.get(Job, 2)
             assert account.status == "active"
             assert account.failures == (0 if outcome == "success" else 2)
             assert account.available_at >= account.last_used_at + 1

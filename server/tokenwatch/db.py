@@ -153,7 +153,23 @@ class Snapshot(Base):
     balance_min: Mapped[float | None]
     pricing_ids: Mapped[list | None]
     truncated: Mapped[bool]
-    __table_args__ = {"sqlite_autoincrement": True}
+    automatic_pricing_id: Mapped[str | None]
+    __table_args__ = (Index("ix_snapshots_automatic_pricing_id", "automatic_pricing_id", "id"),
+                      {"sqlite_autoincrement": True})
+
+
+class SnapshotSchedule(Base):
+    __tablename__ = "snapshot_schedule"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    next_slot_at: Mapped[float]
+    pending_spacing: Mapped[float | None]
+
+
+class SnapshotCapture(Base):
+    __tablename__ = "snapshot_captures"
+    pricing_id: Mapped[str] = mapped_column(primary_key=True)
+    last_attempt_at: Mapped[float]
+    last_captured_at: Mapped[datetime | None]
 
 
 class SnapshotRow(Base):
@@ -288,7 +304,7 @@ def open_store(path: Path):
             Base.metadata.create_all(connection)
         elif version == 1:
             migrate_v1(connection)
-        elif version not in (2, 3, 4, 5, 6, 7, 8):
+        elif version not in (2, 3, 4, 5, 6, 7, 8, 9):
             raise RuntimeError(f"Unsupported database schema version: {version}")
         if version == 2:
             connection.exec_driver_sql("ALTER TABLE jobs ADD COLUMN last_error VARCHAR")
@@ -320,7 +336,19 @@ def open_store(path: Path):
                 "price_check_ratio=NULL, price_checked_at=NULL, price_check_reason=NULL")
         if version == 1 and connection.exec_driver_sql("PRAGMA foreign_key_check").first():
             raise RuntimeError("Foreign key violation after coin schema migration")
-        connection.execute(text("PRAGMA user_version=8"))
+        if version < 9:
+            if "automatic_pricing_id" not in {
+                row[1] for row in connection.exec_driver_sql("PRAGMA table_info(snapshots)")
+            }:
+                connection.exec_driver_sql("ALTER TABLE snapshots ADD COLUMN automatic_pricing_id VARCHAR")
+            connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_snapshots_automatic_pricing_id "
+                                       "ON snapshots (automatic_pricing_id, id)")
+            SnapshotCapture.__table__.create(connection, checkfirst=True)
+            SnapshotSchedule.__table__.create(connection, checkfirst=True)
+            connection.exec_driver_sql("INSERT OR IGNORE INTO snapshot_schedule (id, next_slot_at) VALUES (1, 0)")
+            connection.exec_driver_sql("INSERT OR IGNORE INTO jobs (kind, options, interval_seconds, enabled, next_run) "
+                                       "VALUES ('snapshots', '{}', 604800, 0, 0)")
+        connection.execute(text("PRAGMA user_version=9"))
         connection.commit()
         connection.execute(text("PRAGMA foreign_keys=ON"))
     return sessionmaker(engine, expire_on_commit=False)

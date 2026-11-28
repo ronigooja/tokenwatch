@@ -21,13 +21,13 @@ from sqlalchemy.orm import Session
 from . import schemas as s
 from .coins import CoinCatalog, SEARCH_PATH, deployment_keys, search_candidates, sync_coin
 from .hub import Hub
-from .collectors import Collectors, snapshot_diff
+from .collectors import Collectors, snapshot_coins, snapshot_diff
 from .config import load_settings
 from .login_session import LoginSessions
 from . import novnc, managed_login_navigation
 from .db import (Account, CatalogCache, CatalogExclusion, CatalogSettings, ChainObservation, Coin, CoinMapping, DailyBalance,
                  DailyCollection, Event, Exclusion, FuturesMapping, Job, PushLog, Rule, Snapshot,
-                 SnapshotRow, Subscription, Transfer, TransferCoin, now, open_store)
+                 SnapshotCapture, SnapshotRow, Subscription, Transfer, TransferCoin, now, open_store)
 from .scheduler import AccountUnavailable, DistributionWait, RequestGate, Scheduler
 from .upstream import UpstreamError
 from .browser.config import AccountConfig, proxy_parts
@@ -191,6 +191,7 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
                 if run_scheduler:
                     scheduler = Scheduler(store, config, {
                         "daily": collectors.daily, "transfers": collectors.transfers, "coin_catalog": catalog.refresh,
+                        "snapshots": collectors.snapshots,
                     }, gate=gate)
                     task = asyncio.create_task(scheduler.run())
             app.state.logins = LoginSessions(store, client, app.state.gate, config)
@@ -653,21 +654,26 @@ def create_app(settings=None, upstream=None, *, catalog_transport=None, run_sche
             (DailyBalance.day == latest.c.day)).where(DailyBalance.coin_id == coin_id)
             .order_by(DailyBalance.entity_id)).all()
 
-    @app.post("/snapshots", status_code=201, response_model=s.SnapshotOut, dependencies=auth)
-    async def create_snapshot(body: s.SnapshotInput, request: Request):
-        collectors = request.app.state.collectors
-        if not collectors:
-            raise HTTPException(503, "Upstream not configured")
-        try:
-            return await collectors.snapshot(body.account_id, body.interval, body.balance_min, body.pricing_ids)
-        except AccountUnavailable as exc:
-            raise HTTPException(409, "Account unavailable") from exc
-        except UpstreamError as exc:
-            raise HTTPException(502, type(exc).__name__) from exc
+    @app.get("/snapshot-coins", response_model=list[s.SnapshotCoinOut], dependencies=auth)
+    def list_snapshot_coins(db: DB):
+        coins = snapshot_coins()
+        return db.execute(select(coins.c.id, coins.c.symbol, SnapshotCapture.last_captured_at,
+            func.count(Snapshot.id).label("snapshot_count")).outerjoin(
+                SnapshotCapture, SnapshotCapture.pricing_id == coins.c.id).outerjoin(
+                Snapshot, Snapshot.automatic_pricing_id == coins.c.id).group_by(
+                coins.c.id, coins.c.symbol, SnapshotCapture.last_captured_at).order_by(coins.c.symbol, coins.c.id)
+        ).mappings().all()
 
     @app.get("/snapshots", response_model=list[s.SnapshotOut], dependencies=auth)
-    def list_snapshots(db: DB, limit: Page = 100, offset: Offset = 0):
-        return db.scalars(select(Snapshot).order_by(Snapshot.id.desc()).offset(offset).limit(limit)).all()
+    def list_snapshots(db: DB, limit: Page = 100, offset: Offset = 0, coin_id: str | None = None, legacy: bool = False):
+        query = select(Snapshot)
+        if coin_id is not None:
+            if legacy:
+                raise HTTPException(422, "coin_id and legacy=true cannot be combined")
+            query = query.where(Snapshot.automatic_pricing_id == coin_id)
+        elif legacy:
+            query = query.where(Snapshot.automatic_pricing_id.is_(None))
+        return db.scalars(query.order_by(Snapshot.id.desc()).offset(offset).limit(limit)).all()
 
     def snapshot_rows(db, snapshot_id):
         return db.scalars(select(SnapshotRow).where(SnapshotRow.snapshot_id == snapshot_id)

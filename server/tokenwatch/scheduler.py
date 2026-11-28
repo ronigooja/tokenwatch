@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from sqlalchemy import and_, delete, or_, select
 
-from .db import Account, Job, Snapshot, Transfer, now
+from .db import Account, Job, Snapshot, SnapshotSchedule, Transfer, now
 from .browser.client import _BrowserFailure
 from .coins import CatalogRefreshFailure
 from .rules import alert
@@ -110,17 +110,17 @@ class RequestGate:
             self.notify_account(account_id)
             return "unknown"
 
-    async def get(self, account_id, path, params, decode=lambda value: value, probe=False, single=False):
+    async def get(self, account_id, path, params, decode=lambda value: value, probe=False, single=False, reserve=None):
         if self.closing:
             raise asyncio.CancelledError()
         task = asyncio.current_task()
         self.in_flight.add(task)
         try:
-            return await self._dispatch(account_id, path, params, decode, probe, single)
+            return await self._dispatch(account_id, path, params, decode, probe, single, reserve)
         finally:
             self.in_flight.discard(task)
 
-    async def _dispatch(self, account_id, path, params, decode, probe, single=False):
+    async def _dispatch(self, account_id, path, params, decode, probe, single, reserve):
         if account_id is None:
             while True:
                 if self.closing:
@@ -146,7 +146,9 @@ class RequestGate:
                 if account.available_at > stamp:
                     raise DistributionWait("waiting_for_account_request_gate", account.available_at)
                 try:
-                    return await self._get(account.id, path, params, decode, probe)
+                    return await self._get(account.id, path, params, decode, probe, reserve)
+                except DistributionWait:
+                    raise
                 except PAUSING_ERRORS as exc:
                     if single:
                         raise
@@ -154,9 +156,9 @@ class RequestGate:
                     continue
                 except AccountUnavailable:
                     continue
-        return await self._get(account_id, path, params, decode, probe)
+        return await self._get(account_id, path, params, decode, probe, reserve)
 
-    async def _get(self, account_id, path, params, decode, probe):
+    async def _get(self, account_id, path, params, decode, probe, reserve):
         async with self.locks[account_id]:
             while True:
                 if self.closing:
@@ -167,7 +169,10 @@ class RequestGate:
                         raise AccountUnavailable(account_id)
                     delay = account.available_at - self.clock()
                     if delay <= 0:
-                        account.last_used_at = self.clock()
+                        stamp = self.clock()
+                        if reserve is not None:
+                            reserve(db, stamp)
+                        account.last_used_at = stamp
                         account.available_at = account.last_used_at + self.settings.request_interval + self.uniform(
                             0, self.settings.request_jitter
                         )
@@ -269,6 +274,8 @@ class Scheduler:
             if current and all(getattr(current, key) == getattr(job, key) for key in (
                 "next_run", "enabled", "account_id", "kind", "coin_id", "options", "interval_seconds"
             )):
+                if job.kind == "snapshots":
+                    next_run = max(next_run, db.get(SnapshotSchedule, 1).next_slot_at)
                 current.next_run, current.wait_reason = next_run, wait_reason
                 if success or last_error is not None:
                     current.last_error = last_error
@@ -301,7 +308,7 @@ class Scheduler:
                     Account.status == "active", Account.available_at <= self.clock())),
             ).order_by(Job.next_run, Job.id)).all()
         for job in jobs:
-            key = job.account_id if job.account_id is not None else job.id
+            key = ("kind", job.kind) if job.kind == "snapshots" else job.account_id if job.account_id is not None else job.id
             if key not in self.running:
                 self.running[key] = asyncio.create_task(self.run_job(job))
 

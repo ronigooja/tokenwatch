@@ -194,7 +194,7 @@ class JobOptions(Schema):
 
 
 class JobInput(Schema):
-    kind: Literal["transfers", "daily", "coin_catalog"]
+    kind: Literal["transfers", "daily", "coin_catalog", "snapshots"]
     account_id: Ref | None = None
     coin_id: CoinRef | None = None
     options: JobOptions = Field(default_factory=JobOptions)
@@ -207,6 +207,8 @@ class JobInput(Schema):
             raise ValueError("only transfer jobs require a coin")
         if (self.kind == "daily") != (self.options.balance_min is not None):
             raise ValueError("only daily jobs require balance_min")
+        if self.kind == "snapshots" and self.account_id is not None:
+            raise ValueError("snapshot jobs use any eligible account")
         return self
 
 
@@ -304,11 +306,11 @@ class BalanceCurve(Schema):
     series: dict[str, list[BalancePoint]]
 
 
-class SnapshotInput(Schema):
-    account_id: Ref
-    interval: Interval = "7d"
-    balance_min: BalanceMin | None = None
-    pricing_ids: Annotated[list[Ref], Field(min_length=1, max_length=50)] | None = None
+class SnapshotCoinOut(Schema):
+    id: str
+    symbol: str
+    last_captured_at: UTCDateTime | None
+    snapshot_count: int
 
 
 class SnapshotOut(Schema):
