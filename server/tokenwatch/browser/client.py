@@ -244,7 +244,11 @@ class BrowserUpstreamClient:
                 async with self._lease(account_id, deadline=timeout) as instance:
                     if instance.forward is None:
                         try:
-                            await instance.session.check_site()
+                            try:
+                                await instance.session.check_site()
+                            except Blocked:
+                                await self._wait_for_challenge(instance.session, None, challenged=True)
+                                await instance.session.check_site()
                         except ManagerError as error:
                             raise _BrowserFailure(f"Browser Manager: {error.code}") from None
                     timestamp = int(self._clock())
@@ -486,7 +490,12 @@ class BrowserUpstreamClient:
                 except Exception:
                     inspect = can_click = False
                     reason = "inspection_failed"
-            active = info["challenge"] if info is not None else "just a moment" in (await session.title()).lower()
+            if info is not None:
+                active = info["challenge"]
+            elif callable(getattr(session, "challenge_active", None)):
+                active = await session.challenge_active()
+            else:
+                active = "just a moment" in (await session.title()).lower()
             if not active:
                 return attempts, "cleared" if attempts else "skipped", "challenge_cleared" if attempts else "cleared_without_click", True
             now = loop.time()
@@ -509,7 +518,7 @@ class BrowserUpstreamClient:
                         try:
                             await session.click_challenge(box, attempts)
                         except Exception:
-                            can_click, reason = False, "click_error"
+                            can_click, reason = False, "inspection_failed" if isinstance(session, ManagerPage) else "click_error"
                         else:
                             next_click = loop.time() + self._config.cf_click_wait_seconds
                             reason = "attempt_limit"
@@ -520,11 +529,11 @@ class BrowserUpstreamClient:
             await asyncio.sleep(min(delay, max(0, end - loop.time())))
         return attempts, "failed" if attempts else "skipped", reason, False
 
-    async def _wait_for_challenge(self, session: BrowserSession, forward: Forward) -> None:
-        async def challenged():
+    async def _wait_for_challenge(self, session: BrowserSession, forward: Forward | None, *, challenged=False) -> None:
+        async def is_challenged():
             return "just a moment" in (await session.title()).lower()
 
-        if not await _through(forward, challenged):
+        if not challenged and not await _through(forward, is_challenged):
             return
         enabled = (self._config.cf_click_enabled and callable(getattr(session, "challenge_info", None))
                    and callable(getattr(session, "click_challenge", None)))
@@ -538,7 +547,7 @@ class BrowserUpstreamClient:
         try:
             if self._config.cf_wait_seconds:
                 async with asyncio.timeout(self._config.cf_wait_seconds):
-                    if await _through(forward, episode):
+                    if await (_through(forward, episode) if forward is not None else episode()):
                         return
         except TimeoutError:
             pass

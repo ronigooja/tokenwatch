@@ -13,7 +13,7 @@ from starlette.websockets import WebSocketDisconnect
 from tokenwatch.api import create_app
 from tokenwatch.browser.client import BrowserUpstreamClient, _BrowserFailure, sign_payload
 from tokenwatch.browser.config import AccountConfig, BrowserConfig
-from tokenwatch.browser.manager import Manager
+from tokenwatch.browser.manager import Manager, ManagerPage
 from tokenwatch.browser.transport import LOGIN_URL
 from tokenwatch.config import Settings
 from tokenwatch.db import Account
@@ -44,6 +44,8 @@ class FakeManager:
         self.fail_open = False
         self.fill_results = [False]
         self.fill_error = False
+        self.frames_error = False
+        self.clear_on_click = False
 
     async def __call__(self, request):
         assert request.method == "POST" and request.url.path == "/v1/project"
@@ -64,6 +66,14 @@ class FakeManager:
             result = {"url": self.pages[page], "title": self.title, "generation": 1}
         if op == "navigate":
             self.pages[page] = args["url"]
+        if op == "frames":
+            if self.frames_error:
+                return httpx.Response(400, json={"error": {"code": "invalid"}})
+            result = {"viewport": {"width": 800, "height": 600}, "frames": [
+                {"host": "challenges.cloudflare.com", "visible": True,
+                 "box": {"x": 10, "y": 20, "width": 300, "height": 70}}] if self.title != "Arkham" else []}
+        if op == "input" and self.clear_on_click:
+            self.title = "Arkham"
         if op == "fetch":
             if self.delay_fetch is not None:
                 await asyncio.sleep(self.delay_fetch)
@@ -122,17 +132,66 @@ def test_signed_single_fetch_uses_existing_classifier(tmp_path):
                                 "headers": {"X-Timestamp": "1234", "X-Payload": sign_payload("/transfers", 1234, "test-key")}}
 
 
-def test_unexpected_verification_does_not_fetch_or_click(tmp_path):
+@pytest.mark.parametrize("mode", ["cleared", "blocked", "unsupported"])
+def test_verification_episode(tmp_path, mode, caplog):
     fake = FakeManager()
     fake.title = "Just a moment…"
+    fake.frames_error = mode == "unsupported"
+    fake.clear_on_click = mode == "cleared"
+    cfg = config(tmp_path, cf_wait_seconds=1.2, cf_click_initial_wait_seconds=0.01,
+                 cf_click_wait_seconds=0.01, cf_click_max_attempts=1)
 
     async def run():
-        async with fake.client(config(tmp_path)) as client:
-            with pytest.raises(Blocked) as error:
-                await client.get_json("a", "/user")
-            assert error.value.cause == "challenge_timeout"
+        async with fake.client(cfg) as client:
+            if mode == "cleared":
+                assert await client.get_json("a", "/user") == {"user": "mock"}
+            else:
+                with pytest.raises(Blocked) as error:
+                    await client.get_json("a", "/user")
+                assert error.value.cause == "challenge_timeout"
+                assert error.value.click_attempts == (1 if mode == "blocked" else 0)
     asyncio.run(run())
-    assert [op for op, _ in fake.calls] == ["open", "info", "close"]
+    ops = [op for op, _ in fake.calls]
+    assert ops.count("input") == (0 if mode == "unsupported" else 1)
+    assert ops.count("fetch") == (1 if mode == "cleared" else 0)
+    if mode == "cleared":
+        assert ops.index("fetch") > ops.index("input")
+
+
+def test_manager_click_math():
+    class RNG:
+        def uniform(self, low, high):
+            return high
+
+        def randint(self, low, high):
+            return high
+
+    fake = FakeManager()
+    async def run():
+        manager = Manager(SOCKET, transport=httpx.MockTransport(fake))
+        page = ManagerPage(manager, "profile1", "tokenwatch-automation", rng=RNG())
+        page._viewport = {"width": 40, "height": 50}
+        await page.click_challenge({"x": 20, "y": 30, "width": 10, "height": 10}, 1)
+        await manager.close()
+    asyncio.run(run())
+    assert fake.calls[0][1] == {"profile_id": "profile1", "page_name": "tokenwatch-automation",
+                                "kind": "click", "x": 29, "y": 39, "move_steps": 12, "hold_ms": 200}
+
+
+@pytest.mark.parametrize("page", ["login", "register", "maintenance"])
+def test_interactive_challenge_never_clicked(tmp_path, page):
+    fake = FakeManager()
+    fake.title = "Just a moment…"
+    async def run():
+        async with fake.client(config(tmp_path)) as client:
+            ready = asyncio.Event()
+            task = asyncio.create_task(client.manual_login("a", page=page, ready=ready.set))
+            await asyncio.wait_for(ready.wait(), 1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+    asyncio.run(run())
+    assert not any(op in ("frames", "input", "fetch") for op, _ in fake.calls)
 
 
 def test_restored_blank_page_is_prepared_before_one_fetch(tmp_path):
