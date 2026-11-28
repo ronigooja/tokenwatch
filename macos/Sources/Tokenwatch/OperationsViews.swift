@@ -249,15 +249,25 @@ private struct JobForm: View {
     @State private var enabled = false
     @State private var action = ActionState()
 
+    /// The automatic snapshots job is a singleton. It can be edited (cycle and enabled) but never created or converted here.
+    private var isSnapshotJob: Bool { job?.kind == .snapshots }
+
     var body: some View {
         Form {
-            Picker("Job type", selection: $kind) {
-                ForEach(JobKind.editable, id: \.self) { item in Text(item.rawValue).tag(item) }
+            if isSnapshotJob {
+                LabeledContent("Job type", value: JobKind.snapshots.rawValue)
+                LabeledContent("Account", value: "Any account")
+                Text("Snapshots are collected automatically. Set how long each cycle lasts.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Picker("Job type", selection: $kind) {
+                    ForEach(JobKind.editable, id: \.self) { item in Text(item.rawValue).tag(item) }
+                }
+                AccountPicker(accounts: accounts, selection: $account, anyAccountLabel: kind == .transfers ? nil : "Any account")
+                if kind == .transfers { CoinPicker(coins: coins, selection: $coin) }
+                if kind == .daily { TextField("Minimum USD", text: $minimum) }
             }
-            AccountPicker(accounts: accounts, selection: $account, anyAccountLabel: kind == .transfers ? nil : "Any account")
-            if kind == .transfers { CoinPicker(coins: coins, selection: $coin) }
-            if kind == .daily { TextField("Minimum USD", text: $minimum) }
-            TextField("Frequency (seconds)", text: $frequency)
+            TextField(isSnapshotJob ? "Cycle (seconds)" : "Frequency (seconds)", text: $frequency)
             Toggle("Enabled", isOn: $enabled)
             ActionNotice(action: action)
             HStack {
@@ -286,6 +296,13 @@ private struct JobForm: View {
     }
 
     private func save() async throws {
+        if isSnapshotJob {
+            guard let cycle = try frequency.nonnegative("Cycle"), cycle > 0 else {
+                throw InputError("Enter a cycle greater than zero.")
+            }
+            onSave(try await client.saveJob(.snapshotCycle(seconds: cycle, enabled: enabled), id: job?.id))
+            return
+        }
         guard let interval = try frequency.nonnegative("Frequency"), interval > 0 else {
             throw InputError("Enter a frequency greater than zero.")
         }

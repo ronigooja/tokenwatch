@@ -3,9 +3,9 @@ import XCTest
 @testable import TokenwatchCore
 
 final class SnapshotInterpretationTests: XCTestCase {
-    private func detail(_ id: Int, at seconds: TimeInterval, interval: Interval = .week, min: Double? = 100,
+    private func detail(_ id: Int, at seconds: TimeInterval, lookback: Lookback = .week, min: Double? = 100,
                         truncated: Bool = false, rows: [SnapshotRow]) -> SnapshotDetail {
-        SnapshotDetail(id: id, createdAt: Date(timeIntervalSince1970: seconds), interval: interval, balanceMin: min,
+        SnapshotDetail(id: id, createdAt: Date(timeIntervalSince1970: seconds), lookback: lookback, balanceMin: min,
                        pricingIds: nil, truncated: truncated, rows: rows)
     }
 
@@ -69,14 +69,14 @@ final class SnapshotInterpretationTests: XCTestCase {
 
     func testIntervalMinimumAndTruncationContext() {
         let mixed = SnapshotComparison([
-            detail(1, at: 1000, interval: .week, min: 100, rows: []),
-            detail(2, at: 2000, interval: .month, min: nil, truncated: true, rows: []),
+            detail(1, at: 1000, lookback: .week, min: 100, rows: []),
+            detail(2, at: 2000, lookback: .month, min: nil, truncated: true, rows: []),
         ])
-        XCTAssertTrue(mixed.intervalsDiffer)
+        XCTAssertTrue(mixed.lookbacksDiffer)
         XCTAssertTrue(mixed.minimumsDiffer)
         XCTAssertTrue(mixed.hasTruncatedColumn)
         let same = SnapshotComparison([detail(1, at: 1000, rows: []), detail(2, at: 2000, rows: [])])
-        XCTAssertFalse(same.intervalsDiffer)
+        XCTAssertFalse(same.lookbacksDiffer)
         XCTAssertFalse(same.minimumsDiffer)
         XCTAssertFalse(same.hasTruncatedColumn)
     }

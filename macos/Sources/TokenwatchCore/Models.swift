@@ -38,7 +38,8 @@ public enum JSONValue: Codable, Equatable, Sendable {
 }
 
 public enum Level: String, Codable, Sendable, CaseIterable { case important, normal, log }
-public enum Interval: String, Codable, Sendable, CaseIterable {
+/// Lookback window of a snapshot capture. Not a schedule; the wire key is `interval`.
+public enum Lookback: String, Codable, Sendable, CaseIterable {
     case week = "7d", fortnight = "14d", month = "30d"
 }
 public enum Direction: String, Codable, Sendable, CaseIterable {
@@ -239,9 +240,13 @@ public struct SnapshotCoin: Codable, Sendable, Hashable, Identifiable {
 
 /// `pricingIds` and `balanceMin` are decoded for interpretation only; pricing IDs are never displayed.
 public struct Snapshot: Codable, Sendable, Identifiable {
+    private enum CodingKeys: String, CodingKey {
+        case id, createdAt, lookback = "interval", balanceMin, pricingIds, truncated
+    }
+
     public let id: Int
     public let createdAt: Date
-    public let interval: Interval
+    public let lookback: Lookback
     public let balanceMin: Double?
     public let pricingIds: [String]?
     public let truncated: Bool
@@ -261,9 +266,13 @@ public struct SnapshotRow: Codable, Sendable, Identifiable {
 }
 
 public struct SnapshotDetail: Codable, Sendable, Identifiable {
+    private enum CodingKeys: String, CodingKey {
+        case id, createdAt, lookback = "interval", balanceMin, pricingIds, truncated, rows
+    }
+
     public let id: Int
     public let createdAt: Date
-    public let interval: Interval
+    public let lookback: Lookback
     public let balanceMin: Double?
     public let pricingIds: [String]?
     public let truncated: Bool
@@ -376,10 +385,24 @@ public struct JobInput: Codable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(kind, forKey: .kind)
         try container.encode(accountId, forKey: .accountId)
-        try container.encodeIfPresent(coinId, forKey: .coinId)
-        try container.encode(options, forKey: .options)
+        // The snapshots job requires an explicit null coin_id; other kinds omit it when unset.
+        if kind == .snapshots { try container.encodeNil(forKey: .coinId) }
+        else { try container.encodeIfPresent(coinId, forKey: .coinId) }
+        // The snapshots job requires an empty options object, not `{"balance_min": null}`.
+        if kind == .snapshots { try container.encode(EmptyOptions(), forKey: .options) }
+        else { try container.encode(options, forKey: .options) }
         try container.encode(intervalSeconds, forKey: .intervalSeconds)
         try container.encode(enabled, forKey: .enabled)
+    }
+}
+
+private struct EmptyOptions: Encodable {}
+
+extension JobInput {
+    /// The singleton snapshots job. Backend requires null account and coin, empty options, and the whole cycle in seconds.
+    public static func snapshotCycle(seconds: Double, enabled: Bool) -> JobInput {
+        JobInput(kind: .snapshots, accountId: nil, coinId: nil, options: JobOptions(balanceMin: nil),
+                 intervalSeconds: seconds, enabled: enabled)
     }
 }
 

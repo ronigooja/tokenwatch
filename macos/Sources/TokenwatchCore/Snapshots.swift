@@ -19,7 +19,7 @@ public struct SnapshotComparison: Sendable, Equatable {
         /// Internal snapshot ID. Used for identity only; never displayed.
         public let id: Int
         public let createdAt: Date
-        public let interval: Interval
+        public let lookback: Lookback
         public let balanceMin: Double?
         public let truncated: Bool
     }
@@ -44,14 +44,14 @@ public struct SnapshotComparison: Sendable, Equatable {
     public let columns: [Column]
     public let rows: [Row]
 
-    public var intervalsDiffer: Bool { Set(columns.map(\.interval)).count > 1 }
+    public var lookbacksDiffer: Bool { Set(columns.map(\.lookback)).count > 1 }
     public var minimumsDiffer: Bool { Set(columns.map(\.balanceMin)).count > 1 }
     public var hasTruncatedColumn: Bool { columns.contains(where: \.truncated) }
 
     public init(_ details: [SnapshotDetail]) {
         let sorted = details.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
         columns = sorted.map {
-            Column(id: $0.id, createdAt: $0.createdAt, interval: $0.interval, balanceMin: $0.balanceMin,
+            Column(id: $0.id, createdAt: $0.createdAt, lookback: $0.lookback, balanceMin: $0.balanceMin,
                    truncated: $0.truncated)
         }
 

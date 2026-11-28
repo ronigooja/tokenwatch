@@ -500,6 +500,25 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(Set(JobKind.editable), Set(JobKind.allCases).subtracting([.snapshots]))
     }
 
+    func testSnapshotCycleJobEncodesBackendShape() throws {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: encoder.encode(JobInput.snapshotCycle(seconds: 3600, enabled: true))) as? [String: Any])
+        XCTAssertEqual(object["kind"] as? String, "snapshots")
+        XCTAssertTrue(object["account_id"] is NSNull)
+        XCTAssertTrue(object["coin_id"] is NSNull)
+        XCTAssertEqual((object["options"] as? [String: Any])?.isEmpty, true)
+        XCTAssertEqual(object["interval_seconds"] as? Double, 3600)
+        XCTAssertEqual(object["enabled"] as? Bool, true)
+    }
+
+    func testSnapshotLookbackDecodesFromIntervalKey() throws {
+        let json = #"{"id":5,"created_at":"2026-01-02T03:04:05Z","interval":"30d","balance_min":null,"pricing_ids":null,"truncated":false}"#
+        let snapshot = try APIClient.decoder().decode(Snapshot.self, from: Data(json.utf8))
+        XCTAssertEqual(snapshot.lookback, .month)
+    }
+
     func testJobDecodesLastError() throws {
         let failed = #"{"id":6,"kind":"transfers","account_id":"acc-1","coin_id":"native:bitcoin","options":{"balance_min":null},"interval_seconds":60,"enabled":true,"next_run":0,"wait_reason":null,"last_error":"HTTP 502"}"#
         let job = try APIClient.decoder().decode(Job.self, from: Data(failed.utf8))

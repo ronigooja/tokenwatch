@@ -2,6 +2,9 @@ import SwiftUI
 import TokenwatchCore
 
 /// Coin-first workspace for automatic snapshots. Opaque pricing IDs, chains, sources, and raw token JSON are never shown.
+///
+/// A screen changes only after its data has loaded, inside the same `ActionState` run that fetched it. Navigation
+/// controls are disabled while any request runs, so a click can never open a screen that will not load.
 @MainActor
 struct SnapshotsView: View {
     private enum Origin: Equatable { case history(SnapshotCoin), earlier }
@@ -22,7 +25,7 @@ struct SnapshotsView: View {
     @State private var historyPage = Page()
     @State private var earlier: [Snapshot] = []
     @State private var earlierPage = Page()
-    /// Kept across history pages. Keyed by snapshot ID; cleared when a different coin is opened.
+    /// Kept across history pages. Cleared when a different coin is opened.
     @State private var selected: [Int: Snapshot] = [:]
     @State private var selectionCoinID: String?
     @State private var detail: SnapshotDetail?
@@ -33,9 +36,11 @@ struct SnapshotsView: View {
             if screen != .index {
                 HStack {
                     Button { goBack() } label: { Label("Back", systemImage: "chevron.left") }
+                        .disabled(action.busy)
                     Spacer()
                 }
             }
+            // The only progress indicator on this page.
             ActionNotice(action: action)
             content
         }
@@ -49,7 +54,7 @@ struct SnapshotsView: View {
         case .history(let coin): historyView(coin)
         case .earlier: earlierView
         case .detail: detailContent
-        case .compare(let coin): compareContent(coin)
+        case .compare: compareContent
         }
     }
 
@@ -62,12 +67,14 @@ struct SnapshotsView: View {
                 Text("Snapshots are captured automatically. Each coin lists its captures.")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("Earlier Snapshots") { openEarlier() }
-                Button("Refresh") { action.run { try await loadIndex() } }
+                Button("Earlier Snapshots") { openEarlier() }.disabled(action.busy)
+                Button("Refresh") { action.run { coins = try await client.snapshotCoins() } }.disabled(action.busy)
             }
             if coins.isEmpty {
-                ContentUnavailableView("No Snapshots Yet", systemImage: "camera",
-                                       description: Text("Coins appear here after their first automatic capture."))
+                if !action.busy {
+                    ContentUnavailableView("No Eligible Coins", systemImage: "camera",
+                                           description: Text("No coins are eligible for automatic snapshots yet."))
+                }
             } else if visible.isEmpty {
                 ContentUnavailableView.search(text: query)
             } else {
@@ -76,11 +83,16 @@ struct SnapshotsView: View {
                         Button(coin.symbol) { openHistory(coin) }.buttonStyle(.link)
                     }
                     TableColumn("Last Captured") { (coin: SnapshotCoin) in
-                        Text(coin.lastCapturedAt.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "—")
+                        if let date = coin.lastCapturedAt {
+                            Text(date.formatted(date: .abbreviated, time: .shortened))
+                        } else {
+                            Text("Not captured yet").foregroundStyle(.secondary)
+                        }
                     }
                     TableColumn("Snapshots") { (coin: SnapshotCoin) in Text(coin.snapshotCount, format: .number) }
                         .width(90)
                 }
+                .disabled(action.busy)
             }
         }
         .searchable(text: $query, prompt: "Search by symbol")
@@ -102,8 +114,10 @@ struct SnapshotsView: View {
             }
             Text("Select at least two snapshots to compare. Selections are kept across pages.")
                 .font(.caption).foregroundStyle(.secondary)
-            if history.isEmpty && !action.busy {
-                ContentUnavailableView("No Snapshots on This Page", systemImage: "camera")
+            if history.isEmpty {
+                if !action.busy {
+                    ContentUnavailableView("No Snapshots on This Page", systemImage: "camera")
+                }
             } else {
                 Table(history) {
                     TableColumn("Compare") { (entry: Snapshot) in
@@ -115,13 +129,15 @@ struct SnapshotsView: View {
                     TableColumn("Captured") { (entry: Snapshot) in
                         Text(entry.createdAt.formatted(date: .abbreviated, time: .shortened))
                     }
-                    TableColumn("Interval") { (entry: Snapshot) in Text(entry.interval.rawValue) }
+                    TableColumn("Lookback") { (entry: Snapshot) in Text(entry.lookback.rawValue) }
                     TableColumn("Minimum") { (entry: Snapshot) in Text(minimumText(entry.balanceMin)) }
                     TableColumn("Coverage") { (entry: Snapshot) in Text(coverageText(entry.truncated)) }
                     TableColumn("") { (entry: Snapshot) in
-                        Button("Details") { openDetail(entry.id, from: .history(coin)) }.buttonStyle(.link)
+                        Button("Details") { openDetail(entry.id, from: .history(coin)) }
+                            .buttonStyle(.link).disabled(action.busy)
                     }.width(70)
                 }
+                .disabled(action.busy)
             }
         }
     }
@@ -136,70 +152,74 @@ struct SnapshotsView: View {
             Pager(page: earlierPage, count: earlier.count, busy: action.busy) { offset in
                 action.run { try await loadEarlier(Page(offset: offset)) }
             }
-            if earlier.isEmpty && !action.busy {
-                ContentUnavailableView("No Earlier Snapshots", systemImage: "tray")
+            if earlier.isEmpty {
+                if !action.busy {
+                    ContentUnavailableView("No Earlier Snapshots", systemImage: "tray")
+                }
             } else {
                 Table(earlier) {
                     TableColumn("Captured") { (entry: Snapshot) in
                         Text(entry.createdAt.formatted(date: .abbreviated, time: .shortened))
                     }
-                    TableColumn("Interval") { (entry: Snapshot) in Text(entry.interval.rawValue) }
+                    TableColumn("Lookback") { (entry: Snapshot) in Text(entry.lookback.rawValue) }
                     TableColumn("Minimum") { (entry: Snapshot) in Text(minimumText(entry.balanceMin)) }
                     TableColumn("Coverage") { (entry: Snapshot) in Text(coverageText(entry.truncated)) }
                     TableColumn("") { (entry: Snapshot) in
-                        Button("Details") { openDetail(entry.id, from: .earlier) }.buttonStyle(.link)
+                        Button("Details") { openDetail(entry.id, from: .earlier) }
+                            .buttonStyle(.link).disabled(action.busy)
                     }.width(70)
                 }
+                .disabled(action.busy)
             }
         }
     }
 
-    // MARK: Entity details
+    // MARK: Entity details and comparison
 
     @ViewBuilder private var detailContent: some View {
-        if let detail {
-            SnapshotDetailView(detail: detail)
-        } else if action.busy {
-            ProgressView()
-        } else {
-            ContentUnavailableView("Details Unavailable", systemImage: "exclamationmark.triangle")
-        }
+        if let detail { SnapshotDetailView(detail: detail) }
     }
 
-    @ViewBuilder private func compareContent(_ coin: SnapshotCoin) -> some View {
-        if let comparison {
-            SnapshotCompareView(comparison: comparison)
-        } else {
-            ContentUnavailableView("Comparison Unavailable", systemImage: "exclamationmark.triangle")
-        }
+    @ViewBuilder private var compareContent: some View {
+        if let comparison { SnapshotCompareView(comparison: comparison) }
     }
 
     // MARK: Navigation and loading
+    //
+    // Each navigation fetches first and changes `screen` last, so a failed load leaves the current screen in place.
 
     private func openHistory(_ coin: SnapshotCoin) {
-        if selectionCoinID != coin.id { selected = [:]; selectionCoinID = coin.id }
-        historyPage = Page()
-        history = []
-        screen = .history(coin)
-        action.run { try await loadHistory(coin, Page()) }
+        action.run {
+            let rows = try await client.snapshots(coinID: coin.id, page: Page())
+            if selectionCoinID != coin.id { selected = [:]; selectionCoinID = coin.id }
+            history = rows
+            historyPage = Page()
+            screen = .history(coin)
+        }
     }
 
     private func openEarlier() {
-        screen = .earlier
-        action.run { try await loadEarlier(Page()) }
+        action.run {
+            let rows = try await client.legacySnapshots(page: Page())
+            earlier = rows
+            earlierPage = Page()
+            screen = .earlier
+        }
     }
 
     private func openDetail(_ id: Int, from origin: Origin) {
-        detail = nil
-        screen = .detail(id, origin)
-        action.run { detail = try await client.snapshot(id) }
+        action.run {
+            let loaded = try await client.snapshot(id)
+            detail = loaded
+            screen = .detail(id, origin)
+        }
     }
 
     private func startCompare(_ coin: SnapshotCoin) {
         let ids = selected.keys.sorted()
         let client = client
         action.run {
-            // Details are the only source for comparison; at most four requests run at once.
+            // Details are the only comparison source. At most four requests run at once.
             let details = try await BoundedConcurrency.map(ids, limit: 4) { id in try await client.snapshot(id) }
             comparison = SnapshotComparison(details)
             screen = .compare(coin)
@@ -207,6 +227,7 @@ struct SnapshotsView: View {
     }
 
     private func goBack() {
+        guard !action.busy else { return }
         switch screen {
         case .index: break
         case .history, .earlier: screen = .index
@@ -240,11 +261,12 @@ struct SnapshotsView: View {
 @MainActor
 private struct SnapshotDetailView: View {
     let detail: SnapshotDetail
+    @State private var selection: String?
 
     var body: some View {
         VStack(alignment: .leading) {
             Text("Captured \(detail.createdAt.formatted(date: .abbreviated, time: .shortened))").font(.headline)
-            Text("Interval \(detail.interval.rawValue) · \(minimumText(detail.balanceMin))")
+            Text("Lookback \(detail.lookback.rawValue) · \(minimumText(detail.balanceMin))")
                 .foregroundStyle(.secondary)
             if detail.truncated {
                 Label("Snapshot may be truncated; some entities may be missing.", systemImage: "exclamationmark.triangle")
@@ -252,15 +274,22 @@ private struct SnapshotDetailView: View {
             }
             Text("Lists the entities the server returned for this snapshot. Dashes mean the server did not report a value.")
                 .font(.caption).foregroundStyle(.secondary)
-            Table(detail.rows) {
+            Table(detail.rows, selection: $selection) {
                 TableColumn("Entity") { (row: SnapshotRow) in
-                    Text(row.entityName ?? "Unnamed entity").foregroundStyle(row.entityName == nil ? .secondary : .primary)
+                    EntityLabel(name: row.entityName, type: nil, entityId: row.entityId, showID: true)
                 }
                 TableColumn("Type") { (row: SnapshotRow) in Text(row.entityType ?? "—") }
                 TableColumn("Units") { (row: SnapshotRow) in Text(number(row.balanceUnit)) }
                 TableColumn("USD") { (row: SnapshotRow) in Text(usd(row.balanceUsd)) }
                 TableColumn("Previous Units") { (row: SnapshotRow) in Text(number(row.prevBalanceUnit)) }
                 TableColumn("Previous USD") { (row: SnapshotRow) in Text(usd(row.prevBalanceUsd)) }
+            }
+            // Selecting a row exposes its entity ID as selectable text for copying.
+            if let row = detail.rows.first(where: { $0.id == selection }) {
+                HStack {
+                    Text("Entity ID").foregroundStyle(.secondary)
+                    Text(row.entityId).font(.caption.monospaced()).textSelection(.enabled)
+                }
             }
         }
     }
@@ -270,11 +299,17 @@ private struct SnapshotDetailView: View {
 private struct SnapshotCompareView: View {
     let comparison: SnapshotComparison
 
+    /// Names used by more than one entity. Those rows also show their entity ID so they stay distinguishable.
+    private var ambiguousNames: Set<String> {
+        let names = comparison.rows.compactMap(\.name)
+        return Set(names.filter { name in names.lazy.filter { $0 == name }.count > 1 })
+    }
+
     var body: some View {
         VStack(alignment: .leading) {
             Text("Comparing \(comparison.columns.count) snapshots, oldest first").font(.headline)
-            if comparison.intervalsDiffer {
-                Label("Intervals differ between the selected snapshots.", systemImage: "info.circle").foregroundStyle(.orange)
+            if comparison.lookbacksDiffer {
+                Label("Lookbacks differ between the selected snapshots.", systemImage: "info.circle").foregroundStyle(.orange)
             }
             if comparison.minimumsDiffer {
                 Label("Minimums differ, so the same entity may appear in one snapshot and not another.",
@@ -300,9 +335,9 @@ private struct SnapshotCompareView: View {
                             }
                         }
                         GridRow {
-                            Text("Interval").foregroundStyle(.secondary)
+                            Text("Lookback").foregroundStyle(.secondary)
                             ForEach(comparison.columns) { column in
-                                Text(column.interval.rawValue).frame(maxWidth: .infinity, alignment: .trailing)
+                                Text(column.lookback.rawValue).frame(maxWidth: .infinity, alignment: .trailing)
                             }
                         }
                         GridRow {
@@ -319,11 +354,8 @@ private struct SnapshotCompareView: View {
                         }
                         ForEach(comparison.rows) { row in
                             GridRow {
-                                VStack(alignment: .leading) {
-                                    Text(row.name ?? "Unnamed entity")
-                                        .foregroundStyle(row.name == nil ? .secondary : .primary)
-                                    if let type = row.type { Text(type).font(.caption).foregroundStyle(.secondary) }
-                                }
+                                EntityLabel(name: row.name, type: row.type, entityId: row.entityId,
+                                            showID: row.name == nil || ambiguousNames.contains(row.name ?? ""))
                                 ForEach(Array(row.cells.enumerated()), id: \.offset) { _, cell in
                                     CompareCell(cell: cell).frame(maxWidth: .infinity, alignment: .trailing)
                                 }
@@ -333,6 +365,26 @@ private struct SnapshotCompareView: View {
                     .monospacedDigit()
                     .padding(.trailing)
                 }
+            }
+        }
+    }
+}
+
+/// Entity label. Unnamed entities say so and show their ID, so they remain distinguishable from one another.
+@MainActor
+private struct EntityLabel: View {
+    let name: String?
+    let type: String?
+    let entityId: String
+    let showID: Bool
+
+    var body: some View {
+        VStack(alignment: .leading) {
+            Text(name ?? "Unnamed entity").foregroundStyle(name == nil ? .secondary : .primary)
+            if let type { Text(type).font(.caption).foregroundStyle(.secondary) }
+            if showID {
+                Text(entityId).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
             }
         }
     }
